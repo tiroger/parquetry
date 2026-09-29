@@ -11,7 +11,7 @@ Built in Rust with [GPUI](https://gpui-kit.com) (Zed's GPU UI framework) and
 ## Install
 
 ```sh
-brew install --cask <owner>/tap/parquetry
+brew install --cask tiroger/tap/parquetry
 ```
 
 This installs `Parquetry.app` and a `parquetry` command:
