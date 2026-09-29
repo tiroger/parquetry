@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for Parquetry.app (NOT sandboxed: the app opens
+  arbitrary paths, folders and globs, and reads ~/.aws/config + credentials).
+
+  disable-library-validation: DuckDB dlopen()s extension files (httpfs, and
+  anything the user INSTALLs) that are signed by DuckDB Labs / linker-signed,
+  not by our Team ID. Without this the hardened runtime refuses to map them.
+
+  No com.apple.security.network.client: that key only has an effect inside the
+  App Sandbox. Outgoing connections are unrestricted for a non-sandboxed app,
+  so it is omitted (see packaging/README.md).
+
+  No allow-jit / allow-unsigned-executable-memory: DuckDB and GPUI don't JIT.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

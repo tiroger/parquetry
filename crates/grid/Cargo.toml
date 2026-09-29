@@ -1,0 +1,16 @@
+[package]
+name = "parquetry-grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parquetry-engine.workspace = true
+gpui-kit.workspace = true
+parking_lot.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+duckdb.workspace = true

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  rust:
+    name: Test & clippy
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  packaging:
+    name: Packaging lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          shellcheck packaging/bin/parquetry scripts/bundle.sh scripts/package.sh \
+            scripts/notarize.sh scripts/update-cask.sh
+
+      - name: Property lists
+        run: plutil -lint packaging/Info.plist.template packaging/Parquetry.entitlements
+
+      - name: Cask syntax
+        run: ruby -c packaging/homebrew/parquetry.rb
+
+      - name: CLI launcher smoke test
+        run: |
+          touch sample.parquet
+          out="$(DRY_RUN=1 packaging/bin/parquetry sample.parquet s3://bucket/key.parquet)"
+          echo "$out"
+          grep -q "open -b io.parquetry.app $PWD/sample.parquet" <<<"$out"
+          grep -q 'parquetry://open\\?url=s3%3A%2F%2Fbucket%2Fkey.parquet' <<<"$out"
+          if packaging/bin/parquetry does-not-exist.parquet 2>/dev/null; then exit 1; fi

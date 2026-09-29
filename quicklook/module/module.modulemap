@@ -1,0 +1,4 @@
+module ParquetryQL {
+    header "../../crates/quicklook/include/parquetry_ql.h"
+    export *
+}

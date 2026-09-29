@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bundle httpfs as a gzipped local DuckDB extension repository: raw extension
+  # Mach-O files can't be codesigned (DuckDB appends its own signature), and
+  # unsigned Mach-O files in the bundle fail notarization. See packaging/README.md.
+  DUCKDB_EXT_LAYOUT: repo
+
+jobs:
+  release:
+    name: Build, sign, notarize, publish
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0 # CFBundleVersion = commit count
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: universal-release
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version="$(awk '/^\[/{s=($0=="[workspace.package]")} s&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/parquetry-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERT"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -f pkcs12 -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Put it first in the search list, keeping the existing keychains.
+          existing=()
+          while IFS= read -r kc; do
+            kc="$(sed -e 's/^ *"//' -e 's/" *$//' <<<"$kc")"
+            if [ -n "$kc" ]; then existing+=("$kc"); fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+          rm -f "$CERT"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::no 'Developer ID Application' identity in MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build universal app bundle
+        run: UNIVERSAL=1 scripts/bundle.sh
+
+      - name: Package zip + dmg
+        run: scripts/package.sh
+
+      - name: Notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/notarize.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          files=(
+            "target/dist/Parquetry-$VERSION.zip"
+            "target/dist/Parquetry-$VERSION.dmg"
+            "target/dist/SHA256SUMS"
+          )
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" --generate-notes --verify-tag
+          fi
+
+      - name: Update Homebrew tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN not set; skipping the Homebrew tap update"
+            exit 0
+          fi
+          scripts/update-cask.sh "$VERSION" "target/dist/Parquetry-$VERSION.zip" target/dist/parquetry.rb
+          TAP_DIR="$RUNNER_TEMP/homebrew-tap"
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/${GITHUB_OWNER}/homebrew-tap.git" "$TAP_DIR"
+          mkdir -p "$TAP_DIR/Casks"
+          cp target/dist/parquetry.rb "$TAP_DIR/Casks/parquetry.rb"
+          cd "$TAP_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/parquetry.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up to date"
+          else
+            git commit -m "parquetry $VERSION"
+            git push origin HEAD
+          fi
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ] && [ -f "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN"
+          fi

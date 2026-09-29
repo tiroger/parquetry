@@ -1,0 +1,16 @@
+[package]
+name = "parquetry-quicklook"
+description = "Quick Look preview generator for Parquet files (static library for the macOS .appex)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "lz4", "flate2-zlib-rs", "brotli"] }
+arrow = { version = "58", default-features = false, features = ["prettyprint"] }
+
+[dev-dependencies]
+tempfile = "3"

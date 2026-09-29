@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/grid", "crates/app", "crates/quicklook"]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/rogerlefort/parquetry"
+
+[workspace.dependencies]
+parquetry-engine = { path = "crates/engine" }
+parquetry-grid = { path = "crates/grid" }
+gpui-kit = { version = "=0.7.0", features = ["tree-sitter-sql"] }
+# Compile Metal shaders at runtime so builds don't need the full Xcode toolchain.
+gpui_apple = { package = "gpui-pre-apple", version = "=0.3.7", features = ["runtime_shaders"] }
+duckdb = { version = "=1.10505.0", features = ["bundled", "parquet", "json", "vtab-arrow"] }
+anyhow = "1"
+thiserror = "2"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+tempfile = "3"
+arrow = { version = "58", default-features = false, features = ["ipc", "prettyprint"] }
+aws-config = { version = "1.12", features = ["behavior-version-latest", "sso"] }
+aws-sdk-s3 = { version = "1.150", features = ["behavior-version-latest"] }
+aws-credential-types = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+dirs = "6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+debug = false
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2

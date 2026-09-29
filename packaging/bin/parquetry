@@ -1,0 +1,197 @@
+#!/bin/bash
+# parquetry: open files, folders, globs and URLs in Parquetry.app from a shell.
+#
+# Installed as Parquetry.app/Contents/Resources/bin/parquetry; Homebrew's cask
+# `binary` stanza symlinks it to $(brew --prefix)/bin/parquetry.
+#
+#   DRY_RUN=1       print the `open` commands instead of running them
+#   PARQUETRY_APP   use this .app instead of the one containing this script
+set -euo pipefail
+
+PROG="parquetry"
+BUNDLE_ID="io.parquetry.app"
+
+usage() {
+	cat <<EOF
+Usage: $PROG [OPTIONS] [FILE|FOLDER|GLOB|URL]...
+
+Open data files in Parquetry.
+
+Arguments:
+  FILE      Parquet, Arrow/Feather, CSV/TSV, JSON/JSONL/NDJSON or Excel file
+  FOLDER    a directory (e.g. a partitioned Parquet dataset)
+  GLOB      a quoted pattern such as 'data/*.parquet' or 'logs/**/*.parquet'
+  URL       s3://bucket/key.parquet, gs://..., https://..., http://...
+
+With no arguments, Parquetry is just brought to the front.
+
+Options:
+  -h, --help       show this help and exit
+  -v, --version    print the Parquetry version and exit
+  --               treat every following argument as a path
+
+Examples:
+  $PROG sales.parquet
+  $PROG ./warehouse/events/
+  $PROG 'exports/2024-*.parquet'
+  $PROG s3://my-bucket/path/part-0001.parquet
+EOF
+}
+
+die() {
+	printf '%s: %s\n' "$PROG" "$*" >&2
+	exit 1
+}
+
+# Resolve a path through any chain of symlinks (no `readlink -f` on older macOS).
+resolve_symlinks() {
+	local path=$1 dir target
+	while [[ -L $path ]]; do
+		dir=$(cd -P "$(dirname "$path")" && pwd)
+		target=$(readlink "$path")
+		[[ $target == /* ]] || target="$dir/$target"
+		path=$target
+	done
+	dir=$(cd -P "$(dirname "$path")" && pwd)
+	printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+# Percent-encode everything except RFC 3986 unreserved characters.
+urlencode() {
+	local LC_ALL=C
+	local string=$1 out="" c i byte
+	for ((i = 0; i < ${#string}; i++)); do
+		c=${string:i:1}
+		case $c in
+			[a-zA-Z0-9.~_-]) out+=$c ;;
+			*)
+				byte=$(printf '%d' "'$c")
+				out+=$(printf '%%%02X' $((byte & 0xFF)))
+				;;
+		esac
+	done
+	printf '%s\n' "$out"
+}
+
+# Absolute path of an existing file or directory (directories are made physical).
+abs_path() {
+	local p=$1
+	if [[ -d $p ]]; then
+		(cd "$p" && pwd -P)
+	else
+		local dir base
+		dir=$(cd "$(dirname "$p")" && pwd -P)
+		base=$(basename "$p")
+		if [[ $dir == / ]]; then printf '/%s\n' "$base"; else printf '%s/%s\n' "$dir" "$base"; fi
+	fi
+}
+
+run() {
+	if [[ ${DRY_RUN:-} == 1 ]]; then
+		local out="" arg
+		for arg in "$@"; do out+="$(printf '%q' "$arg") "; done
+		printf '%s\n' "${out% }"
+	else
+		"$@"
+	fi
+}
+
+# The app bundle that contains this script: <App>.app/Contents/Resources/bin/parquetry
+find_app() {
+	if [[ -n ${PARQUETRY_APP:-} ]]; then
+		[[ -d $PARQUETRY_APP ]] || die "PARQUETRY_APP is not a directory: $PARQUETRY_APP"
+		abs_path "$PARQUETRY_APP"
+		return
+	fi
+	local self app
+	self=$(resolve_symlinks "${BASH_SOURCE[0]}")
+	app=$(dirname "$(dirname "$(dirname "$(dirname "$self")")")")
+	if [[ $app == *.app && -f $app/Contents/Info.plist ]]; then
+		printf '%s\n' "$app"
+	fi
+	# Otherwise (running from a source checkout) print nothing: fall back to the bundle id.
+}
+
+APP=$(find_app)
+
+open_app() {
+	# open_app [ITEM...]: open items (paths or URLs) with *this* copy of Parquetry.
+	if [[ -n $APP ]]; then
+		run open -a "$APP" "$@"
+	else
+		run open -b "$BUNDLE_ID" "$@"
+	fi
+}
+
+print_version() {
+	local plist version build
+	[[ -n $APP ]] || die "cannot determine version: not running from inside Parquetry.app"
+	plist="$APP/Contents/Info.plist"
+	version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null) ||
+		version=$(defaults read "${plist%.plist}" CFBundleShortVersionString 2>/dev/null) ||
+		die "cannot read version from $plist"
+	build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null || true)
+	if [[ -n $build && $build != "$version" ]]; then
+		printf '%s %s (build %s)\n' "$PROG" "$version" "$build"
+	else
+		printf '%s %s\n' "$PROG" "$version"
+	fi
+}
+
+main() {
+	local -a files=() urls=()
+	local arg only_paths=0 path
+
+	for arg in "$@"; do
+		if ((only_paths == 0)); then
+			case $arg in
+				-h | --help) usage; exit 0 ;;
+				-v | --version) print_version; exit 0 ;;
+				--) only_paths=1; continue ;;
+				-?*) die "unknown option: $arg (see --help)" ;;
+			esac
+		fi
+
+		# file:// URLs are just local paths.
+		if [[ $arg == file://* ]]; then
+			path=${arg#file://}
+			path=${path#localhost}
+			arg=$(printf '%b' "${path//%/\\x}")
+		fi
+
+		if [[ $arg =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+			# s3://, gs://, https://, http://, ... handled by the app itself.
+			urls+=("$arg")
+			continue
+		fi
+
+		# Expand a quoted leading ~ the shell didn't.
+		if [[ $arg == \~ || $arg == \~/* ]]; then
+			arg="$HOME${arg:1}"
+		fi
+
+		if [[ $arg == *'*'* ]]; then
+			# Glob: make it absolute (the app runs with a different cwd) and let the app expand it.
+			[[ $arg == /* ]] || arg="$PWD/${arg#./}"
+			urls+=("$arg")
+			continue
+		fi
+
+		[[ -e $arg ]] || die "no such file or directory: $arg"
+		files+=("$(abs_path "$arg")")
+	done
+
+	if ((${#files[@]} == 0 && ${#urls[@]} == 0)); then
+		open_app
+		return
+	fi
+	if ((${#files[@]} > 0)); then
+		open_app "${files[@]}"
+	fi
+	local u
+	for u in ${urls[@]+"${urls[@]}"}; do
+		open_app "parquetry://open?url=$(urlencode "$u")"
+	done
+}
+
+main "$@"
