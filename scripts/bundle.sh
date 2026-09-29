@@ -14,10 +14,11 @@
 #                      gets a secure timestamp, which notarization requires.
 #   SKIP_QUICKLOOK=1   don't build or embed the Quick Look extension
 #   DUCKDB_EXT_LAYOUT  how to bundle DuckDB extensions (see packaging/README.md):
-#                        repo (default) Resources/duckdb_extensions/<duckdb-version>/<platform>/<ext>.duckdb_extension.gz
-#                             (a local DuckDB extension repository; notarization-friendly)
+#                        none (default) don't bundle; DuckDB downloads extensions on first use.
+#                             Required for notarization: Apple rejects DuckDB's own extension
+#                             signatures, even inside .gz files.
+#                        repo Resources/duckdb_extensions/<duckdb-version>/<platform>/<ext>.duckdb_extension.gz
 #                        raw  Resources/duckdb_extensions/<platform>/<ext>.duckdb_extension
-#                        none don't bundle extensions
 #   DUCKDB_EXTENSIONS  space-separated extensions to bundle (default: httpfs)
 #   DUCKDB_VERSION     e.g. v1.5.5 (default: derived from libduckdb-sys in Cargo.lock)
 #   BUILD_NUMBER       CFBundleVersion (default: git commit count, else a UTC date stamp)
@@ -34,7 +35,7 @@ UNIVERSAL="${UNIVERSAL:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_QUICKLOOK="${SKIP_QUICKLOOK:-0}"
 IDENTITY="${CODESIGN_IDENTITY:--}"
-EXT_LAYOUT="${DUCKDB_EXT_LAYOUT:-repo}"
+EXT_LAYOUT="${DUCKDB_EXT_LAYOUT:-none}"
 EXTENSIONS="${DUCKDB_EXTENSIONS:-httpfs}"
 
 APP_NAME="Parquetry"

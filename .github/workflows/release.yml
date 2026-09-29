@@ -17,7 +17,7 @@ env:
   # Bundle httpfs as a gzipped local DuckDB extension repository: raw extension
   # Mach-O files can't be codesigned (DuckDB appends its own signature), and
   # unsigned Mach-O files in the bundle fail notarization. See packaging/README.md.
-  DUCKDB_EXT_LAYOUT: repo
+  DUCKDB_EXT_LAYOUT: none
 
 jobs:
   release:

@@ -27,7 +27,7 @@ scripts/package.sh                        # zip + dmg + SHA256SUMS
 
 `bundle.sh` options: `PROFILE`, `UNIVERSAL=1`, `SKIP_BUILD=1`,
 `SKIP_QUICKLOOK=1`, `CODESIGN_IDENTITY` (default `-`, ad-hoc),
-`DUCKDB_EXT_LAYOUT` (`repo` default, `raw`, `none`), `DUCKDB_EXTENSIONS`
+`DUCKDB_EXT_LAYOUT` (`none` default, `repo`, `raw`), `DUCKDB_EXTENSIONS`
 (default `httpfs`), `DUCKDB_VERSION` (default: from `libduckdb-sys` in
 `Cargo.lock`), `BUILD_NUMBER`. The Quick Look extension is built with
 `scripts/build-quicklook.sh` and embedded at `Contents/PlugIns/` when it builds;
@@ -93,7 +93,7 @@ xattr -dr com.apple.quarantine /Applications/Parquetry.app
 
 ```sh
 export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-UNIVERSAL=1 DUCKDB_EXT_LAYOUT=repo scripts/bundle.sh
+UNIVERSAL=1 scripts/bundle.sh
 scripts/package.sh
 NOTARY_PROFILE=parquetry-notary scripts/notarize.sh      # or APPLE_ID/APPLE_TEAM_ID/APPLE_APP_PASSWORD
 scripts/update-cask.sh 0.1.0 target/dist/Parquetry-0.1.0.zip   # -> target/dist/parquetry.rb
@@ -161,12 +161,19 @@ the app's signature, and `codesign --verify --deep --strict` passes. For
 notarization, though, unsigned Mach-O files anywhere in the bundle are expected
 to be rejected. That's why there are two layouts:
 
-* `repo` (the default, also used by `release.yml`): gzipped files in DuckDB's own repository
+* `none` (the default, used by `release.yml`): nothing is bundled. DuckDB
+  installs httpfs from extensions.duckdb.org the first time an S3 or HTTP
+  location is opened (which needs the network anyway). **Notarized builds must
+  use this:** Apple's notary service unpacks `.gz` files and rejects the
+  extension binary because it carries DuckDB's signature, not a valid Apple
+  one ("The signature of the binary is invalid"). Re-signing it would break
+  DuckDB's own signature check.
+* `repo`: gzipped files in DuckDB's own repository
   layout, `Resources/duckdb_extensions/<ver>/<platform>/httpfs.duckdb_extension.gz`.
   The app installs from it offline with
   `INSTALL httpfs FROM '<Resources>/duckdb_extensions'; LOAD httpfs;`, which
   copies the file into `extension_directory`. It's verified to work with DuckDB 1.5.5.
-  There's no raw Mach-O in the bundle for the notary service to reject.
+  Works for local builds; rejected by notarization (see above).
 * `raw`: `Resources/duckdb_extensions/<platform>/httpfs.duckdb_extension`,
   loaded with `LOAD '<path>'`. Fine for local builds; not notarizable.
 
