@@ -1,0 +1,7 @@
+# Windows: link the C runtime statically so parquetry.exe runs on machines without
+# the Visual C++ Redistributable (DuckDB is C++; `cc` builds it with /MT to match).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

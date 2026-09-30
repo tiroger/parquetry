@@ -16,6 +16,9 @@ Everything needed to turn the `parquetry` binary into a signed, notarized
 | `scripts/notarize.sh` | Notarize and staple the app and dmg |
 | `scripts/appcast.sh` | Sign the zip and write the Sparkle update feed `target/dist/appcast.xml` |
 | `scripts/update-cask.sh` | Render the cask with the real version and sha256 |
+| `packaging/scoop/parquetry.json` | Scoop manifest template, rendered by `scripts/update-scoop.sh` |
+| `scripts/update-scoop.sh` | Render the Scoop manifest with the real version and sha256 |
+| `.cargo/config.toml` | Windows builds link the C runtime statically (no VC++ redistributable needed) |
 | `.github/workflows/ci.yml` / `release.yml` | CI, and a tag-triggered release pipeline |
 
 ## Local builds
@@ -137,6 +140,30 @@ commits the rendered cask to `OWNER/homebrew-tap`. It skips that last step if
 `cargo clippy --workspace --all-targets -- -D warnings`. Both are strict: a
 warning fails CI. It also lints the scripts, plists and cask, and smoke-tests
 the CLI launcher.
+
+## Windows
+
+`release.yml`'s `windows` job builds `parquetry.exe` on `windows-latest`, checks it
+doesn't need the Visual C++ runtime, and publishes
+`Parquetry-<version>-windows-x64.zip` and its `.sha256` on the release. It runs for
+every version tag, after the macOS job when that runs; without the macOS job it
+creates the release itself.
+
+Distribution is through a Scoop bucket, `OWNER/scoop-bucket` (public, with a
+`bucket/` directory), the Windows counterpart of the Homebrew tap. The job renders
+`bucket/parquetry.json` with `scripts/update-scoop.sh` and pushes it when the
+`SCOOP_BUCKET_TOKEN` secret (a fine-grained PAT with *Contents: read & write* on the
+bucket) is set. The manifest's `checkver`/`autoupdate` also let
+`scoop` maintainers' tools bump it from new GitHub releases.
+
+Builds aren't code-signed yet. Scoop's downloads carry no "downloaded from the
+internet" mark, so SmartScreen doesn't warn; PCs that only allow signed apps will
+block the exe regardless.
+
+Order for a hand-made macOS release: publish the macOS assets first
+(`gh release create vX.Y.Z …`, which also creates the tag), so the release is
+never "latest" without `appcast.xml`; the tag then triggers the Windows job, which
+adds its zip to that release.
 
 ## Installing (users)
 

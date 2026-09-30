@@ -1,0 +1,32 @@
+{
+    "version": "@VERSION@",
+    "description": "Fast viewer for Parquet, CSV, JSON and more, local or on S3",
+    "homepage": "https://github.com/@GITHUB_OWNER@/parquetry",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/@GITHUB_OWNER@/parquetry/releases/download/v@VERSION@/Parquetry-@VERSION@-windows-x64.zip",
+            "hash": "@SHA256@"
+        }
+    },
+    "bin": "parquetry.exe",
+    "shortcuts": [
+        [
+            "parquetry.exe",
+            "Parquetry"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/@GITHUB_OWNER@/parquetry"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/@GITHUB_OWNER@/parquetry/releases/download/v$version/Parquetry-$version-windows-x64.zip",
+                "hash": {
+                    "url": "$url.sha256"
+                }
+            }
+        }
+    }
+}

@@ -23,8 +23,9 @@ jobs:
   release:
     name: Build, sign, notarize, publish
     # Opt-in: set the repository variable AUTOMATED_RELEASES=true once the
-    # signing secrets exist. Until then releases are published by hand.
-    if: vars.AUTOMATED_RELEASES == 'true' || github.event_name == 'workflow_dispatch'
+    # signing secrets exist. Until then macOS releases are built and published by
+    # hand (see packaging/README.md); the Windows job below runs regardless.
+    if: vars.AUTOMATED_RELEASES == 'true'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
@@ -161,4 +162,100 @@ jobs:
         run: |
           if [ -n "${KEYCHAIN:-}" ] && [ -f "$KEYCHAIN" ]; then
             security delete-keychain "$KEYCHAIN"
+          fi
+
+  windows:
+    name: Windows build, zip, publish
+    # After the macOS job (which creates the release when it runs), or on its own.
+    needs: release
+    if: always() && needs.release.result != 'failure' && needs.release.result != 'cancelled'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version="$(awk '/^\[/{s=($0=="[workspace.package]")} s&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --locked -p parquetry
+
+      - name: Check the exe needs no Visual C++ runtime
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents target\release\parquetry.exe
+          $deps
+          if ($deps -match 'VCRUNTIME|MSVCP|ucrtbase') { throw "parquetry.exe links the C runtime dynamically" }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = "Parquetry-$env:VERSION-windows-x64"
+          $stage = "target\dist\$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target\release\parquetry.exe, LICENSE, README.md -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "target\dist\$name.zip" -Force
+          $hash = (Get-FileHash "target\dist\$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "target\dist\$name.zip.sha256" -Value "$hash  $name.zip" -NoNewline
+          Get-Content "target\dist\$name.zip.sha256"
+
+      - name: Publish to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          files=(
+            "target/dist/Parquetry-$VERSION-windows-x64.zip"
+            "target/dist/Parquetry-$VERSION-windows-x64.zip.sha256"
+          )
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" --generate-notes --verify-tag
+          fi
+
+      - name: Update Scoop bucket
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          GITHUB_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SCOOP_BUCKET_TOKEN" ]; then
+            echo "::warning::SCOOP_BUCKET_TOKEN not set; skipping the Scoop bucket update"
+            exit 0
+          fi
+          BUCKET="$RUNNER_TEMP/scoop-bucket"
+          git clone --depth 1 \
+            "https://x-access-token:${SCOOP_BUCKET_TOKEN}@github.com/${GITHUB_OWNER}/scoop-bucket.git" "$BUCKET"
+          scripts/update-scoop.sh "$VERSION" "target/dist/Parquetry-$VERSION-windows-x64.zip" "$BUCKET/bucket/parquetry.json"
+          cd "$BUCKET"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/parquetry.json
+          if git diff --cached --quiet; then
+            echo "Manifest already up to date"
+          else
+            git commit -m "parquetry $VERSION"
+            git push origin HEAD
           fi

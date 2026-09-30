@@ -58,6 +58,15 @@ jobs:
       - name: Release build
         run: cargo build --release --locked -p parquetry
 
+      - name: Check the exe needs no Visual C++ runtime
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents target\release\parquetry.exe
+          $deps
+          if ($deps -match 'VCRUNTIME|MSVCP|ucrtbase') { throw "parquetry.exe links the C runtime dynamically" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: parquetry-windows-x64
@@ -74,13 +83,16 @@ jobs:
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
           shellcheck packaging/bin/parquetry scripts/bundle.sh scripts/package.sh \
-            scripts/notarize.sh scripts/update-cask.sh
+            scripts/notarize.sh scripts/update-cask.sh scripts/update-scoop.sh scripts/appcast.sh
 
       - name: Property lists
         run: plutil -lint packaging/Info.plist.template packaging/Parquetry.entitlements
 
       - name: Cask syntax
         run: ruby -c packaging/homebrew/parquetry.rb
+
+      - name: Scoop manifest
+        run: python3 -m json.tool packaging/scoop/parquetry.json > /dev/null
 
       - name: CLI launcher smoke test
         run: |
