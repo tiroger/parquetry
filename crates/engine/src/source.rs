@@ -75,14 +75,19 @@ impl SourceSpec {
 
     /// Short name for tabs and titles: the file or folder name.
     pub fn display_name(&self) -> String {
-        let trimmed = self.location.trim_end_matches('/');
-        let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        let trimmed = self.location.trim_end_matches(['/', '\\']);
+        let name = last_segment(trimmed);
         if name.is_empty() {
             self.location.clone()
         } else {
             name.to_string()
         }
     }
+}
+
+/// The part after the last `/` (or `\`, for Windows paths).
+fn last_segment(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// Map a file name to a format by extension (ignoring compression suffixes).
@@ -363,8 +368,7 @@ fn duckdb_glob(conn: &Connection, pattern: &str) -> Result<Vec<String>> {
         .query_map([], |row| row.get::<_, String>(0))?
         .filter_map(|r| r.ok())
         .filter(|f| {
-            let name = f.rsplit('/').next().unwrap_or(f);
-            !is_hidden_name(name)
+            !is_hidden_name(last_segment(f))
         })
         .collect();
     if files.is_empty() {
@@ -423,6 +427,8 @@ mod tests {
         assert_eq!(SourceSpec::new("/a/b/c.parquet").display_name(), "c.parquet");
         assert_eq!(SourceSpec::new("s3://bucket/dir/").display_name(), "dir");
         assert_eq!(SourceSpec::new("s3://bucket").display_name(), "bucket");
+        assert_eq!(SourceSpec::new(r"C:\data\sales.parquet").display_name(), "sales.parquet");
+        assert_eq!(SourceSpec::new(r"D:\exports\2024\").display_name(), "2024");
     }
 
     #[test]
