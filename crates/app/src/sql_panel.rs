@@ -326,7 +326,7 @@ impl SqlPanel {
             }
             (None, Some(Outcome::Message(text, millis))) => div().child(format!("{text} · {}", format::duration_ms(*millis))).into_any_element(),
             (None, Some(Outcome::Error(_))) => div().text_color(theme.danger).child("Query failed").into_any_element(),
-            (None, None) => div().child("Press ⌘↵ to run").into_any_element(),
+            (None, None) => div().child(format!("Press {} to run", crate::actions::key_label("secondary-enter"))).into_any_element(),
         };
         let body: AnyElement = match &self.outcome {
             Some(Outcome::Error(message)) => div()

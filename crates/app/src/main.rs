@@ -1,11 +1,17 @@
 //! Parquetry: a fast viewer for Parquet and friends.
 
+// Release builds on Windows are GUI apps: no console window.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod actions;
 mod app_state;
 mod compare_view;
 mod dialogs;
 mod document;
 mod format;
+// Used off macOS only; compiled everywhere so its tests run on every platform.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod instance;
 mod settings;
 mod sql_panel;
 mod theme;
@@ -27,6 +33,17 @@ use crate::settings::{DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings}
 
 fn main() {
     init_logging();
+    let locations: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with("-psn_"))
+        .filter_map(|a| location_from_argument(&a))
+        .collect();
+    // Windows and Linux: a later launch hands its files to the running app.
+    #[cfg(not(target_os = "macos"))]
+    if instance::forward(&locations) {
+        return;
+    }
+
     let settings = Settings::load();
     let mut paths = EnginePaths::default_for_app();
     paths.bundled_extensions = bundled_extensions_dir();
@@ -37,17 +54,14 @@ fn main() {
             std::process::exit(1);
         }
     };
-
-    let initial: Vec<SourceSpec> = std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with("-psn_"))
-        .filter_map(|a| location_from_argument(&a))
-        .map(SourceSpec::new)
-        .collect();
+    let initial: Vec<SourceSpec> = locations.into_iter().map(SourceSpec::new).collect();
 
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
-    // Files opened from Finder, `open -a`, or parquetry:// links.
+    // Files opened from Finder, `open -a`, parquetry:// links, or (elsewhere) later
+    // launches. An empty list asks for a new window.
     let (url_tx, mut url_rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+    #[cfg(not(target_os = "macos"))]
+    instance::listen(url_tx.clone());
     app.on_open_urls(move |urls| {
         let _ = url_tx.unbounded_send(urls);
     });
@@ -75,12 +89,14 @@ fn main() {
                     .filter_map(|u| location_from_url(u))
                     .map(SourceSpec::new)
                     .collect();
-                if !specs.is_empty() {
-                    cx.update(|cx| {
-                        cx.activate(true);
+                cx.update(|cx| {
+                    cx.activate(true);
+                    if !specs.is_empty() {
                         workspace::open_in_front_window(specs, cx);
-                    });
-                }
+                    } else if urls.is_empty() {
+                        workspace::open_window(Vec::new(), cx);
+                    }
+                });
             }
         })
         .detach();
@@ -165,6 +181,12 @@ fn location_from_url(url: &str) -> Option<String> {
     if let Some(path) = url.strip_prefix("file://") {
         let path = percent_decode(path);
         let path = path.strip_prefix("localhost").unwrap_or(&path).to_string();
+        // file:///C:/data/x.parquet -> C:/data/x.parquet
+        if let Some(rest) = path.strip_prefix('/')
+            && has_drive_letter(rest)
+        {
+            return Some(rest.trim_end_matches('/').to_string());
+        }
         return Some(path.trim_end_matches('/').to_string()).filter(|p| !p.is_empty()).or(Some("/".into()));
     }
     location_from_argument(url)
@@ -176,11 +198,17 @@ fn location_from_argument(arg: &str) -> Option<String> {
     if arg.is_empty() || arg.starts_with('-') {
         return None;
     }
-    if parquetry_engine::is_remote(arg) || arg.starts_with('/') || arg.starts_with('~') {
+    if parquetry_engine::is_remote(arg) || arg.starts_with('/') || arg.starts_with('~') || has_drive_letter(arg) || arg.starts_with(r"\\") {
         return Some(arg.to_string());
     }
     let absolute = std::env::current_dir().map(|d| d.join(arg)).unwrap_or_else(|_| PathBuf::from(arg));
     Some(absolute.to_string_lossy().into_owned())
+}
+
+/// `C:\…` or `C:/…` (Windows absolute paths).
+fn has_drive_letter(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn percent_decode(text: &str) -> String {
@@ -254,5 +282,8 @@ mod tests {
         assert_eq!(location_from_url("file:///Users/me/dir/").as_deref(), Some("/Users/me/dir"));
         assert_eq!(location_from_url("parquetry://open").as_deref(), None);
         assert_eq!(location_from_url("s3://b/k").as_deref(), Some("s3://b/k"));
+        assert_eq!(location_from_url("file:///C:/data/My%20File.parquet").as_deref(), Some("C:/data/My File.parquet"));
+        assert_eq!(location_from_url(r"C:\data\x.parquet").as_deref(), Some(r"C:\data\x.parquet"));
+        assert_eq!(location_from_url(r"\\server\share\x.parquet").as_deref(), Some(r"\\server\share\x.parquet"));
     }
 }

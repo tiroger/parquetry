@@ -52,43 +52,74 @@ gpui_kit::actions!(
 #[action(namespace = parquetry, no_json)]
 pub struct OpenRecent(pub usize);
 
-pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-n", NewWindow, None),
-        KeyBinding::new("cmd-o", OpenFile, None),
-        KeyBinding::new("cmd-shift-o", OpenS3, None),
-        KeyBinding::new("cmd-l", OpenUrl, None),
-        KeyBinding::new("cmd-alt-n", NewSqlConsole, None),
-        KeyBinding::new("cmd-w", CloseTab, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-        KeyBinding::new("cmd-shift-]", NextTab, None),
-        KeyBinding::new("cmd-shift-[", PreviousTab, None),
-        KeyBinding::new("cmd-r", Reload, None),
-        KeyBinding::new("cmd-shift-e", Export, None),
-        KeyBinding::new("cmd-f", Find, None),
-        KeyBinding::new("cmd-g", GoToRow, None),
-        KeyBinding::new("cmd-shift-f", AddFilter, None),
-        KeyBinding::new("cmd-shift-k", ClearFilters, None),
-        KeyBinding::new("cmd-1", ShowData, None),
-        KeyBinding::new("cmd-2", ShowColumns, None),
-        KeyBinding::new("cmd-3", ShowMetadata, None),
-        KeyBinding::new("cmd-4", ShowSql, None),
-        KeyBinding::new("cmd-alt-i", ToggleInspector, None),
-        KeyBinding::new("cmd-=", ZoomIn, None),
-        KeyBinding::new("cmd-+", ZoomIn, None),
-        KeyBinding::new("cmd--", ZoomOut, None),
-        KeyBinding::new("cmd-0", ResetZoom, None),
-        KeyBinding::new("cmd-/", ShowShortcuts, None),
-        // Run SQL from inside the editor; registered after gpui_kit::init so it wins.
-        KeyBinding::new("cmd-enter", RunQuery, Some("SqlEditor > Input")),
-        KeyBinding::new("cmd-enter", RunQuery, Some("SqlEditor")),
-    ]);
+/// Shortcuts that differ between platforms. Everything else uses `secondary-`,
+/// which is ⌘ on macOS and Ctrl elsewhere.
+#[cfg(target_os = "macos")]
+mod keys {
+    pub const TOGGLE_INSPECTOR: &str = "cmd-alt-i";
+    pub const NEW_SQL_CONSOLE: &str = "cmd-alt-n";
+    /// Shown in the shortcut list; `secondary-r` works everywhere.
+    pub const RELOAD: &str = "cmd-r";
+}
+// Ctrl+Alt is AltGr on many keyboard layouts, so avoid it off macOS.
+#[cfg(not(target_os = "macos"))]
+mod keys {
+    pub const TOGGLE_INSPECTOR: &str = "ctrl-shift-i";
+    pub const NEW_SQL_CONSOLE: &str = "ctrl-shift-n";
+    pub const RELOAD: &str = "f5";
 }
 
-/// Build the macOS menu bar. Call again when recents change.
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-n", NewWindow, None),
+        KeyBinding::new("secondary-o", OpenFile, None),
+        KeyBinding::new("secondary-shift-o", OpenS3, None),
+        KeyBinding::new("secondary-l", OpenUrl, None),
+        KeyBinding::new(keys::NEW_SQL_CONSOLE, NewSqlConsole, None),
+        KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
+        KeyBinding::new("secondary-shift-]", NextTab, None),
+        KeyBinding::new("secondary-shift-[", PreviousTab, None),
+        KeyBinding::new("secondary-r", Reload, None),
+        KeyBinding::new("secondary-shift-e", Export, None),
+        KeyBinding::new("secondary-f", Find, None),
+        KeyBinding::new("secondary-g", GoToRow, None),
+        KeyBinding::new("secondary-shift-f", AddFilter, None),
+        KeyBinding::new("secondary-shift-k", ClearFilters, None),
+        KeyBinding::new("secondary-1", ShowData, None),
+        KeyBinding::new("secondary-2", ShowColumns, None),
+        KeyBinding::new("secondary-3", ShowMetadata, None),
+        KeyBinding::new("secondary-4", ShowSql, None),
+        KeyBinding::new(keys::TOGGLE_INSPECTOR, ToggleInspector, None),
+        KeyBinding::new("secondary-=", ZoomIn, None),
+        KeyBinding::new("secondary-+", ZoomIn, None),
+        KeyBinding::new("secondary--", ZoomOut, None),
+        KeyBinding::new("secondary-0", ResetZoom, None),
+        KeyBinding::new("secondary-/", ShowShortcuts, None),
+        // Run SQL from inside the editor; registered after gpui_kit::init so it wins.
+        KeyBinding::new("secondary-enter", RunQuery, Some("SqlEditor > Input")),
+        KeyBinding::new("secondary-enter", RunQuery, Some("SqlEditor")),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new("f5", Reload, None)]);
+}
+
+/// A key binding (`"secondary-shift-o"`, space-separated for sequences) the way
+/// this platform writes it: ⇧⌘O on macOS, Ctrl+Shift+O elsewhere.
+pub fn key_label(binding: &str) -> String {
+    binding
+        .split(' ')
+        .filter_map(|key| Keystroke::parse(key).ok())
+        .map(|key| gpui_kit::component::kbd::Kbd::format(&key))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build the menu bar: the native one on macOS, drawn in each window elsewhere
+/// (see `workspace`). Call again when recents change.
 pub fn set_menus(cx: &mut App) {
     use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
     let recents: Vec<MenuItem> = AppState::settings(cx)
@@ -103,31 +134,58 @@ pub fn set_menus(cx: &mut App) {
         recent_items.push(MenuItem::separator());
         recent_items.push(MenuItem::action("Clear Menu", ClearRecents));
     }
-    cx.set_menus([
-        Menu::new("Parquetry").items([
-            MenuItem::action("About Parquetry", About),
-            MenuItem::action("Check for Updates…", CheckForUpdates).disabled(!crate::updater::is_available()),
+    // macOS has an application menu; elsewhere its items move to File and Help.
+    let mac = cfg!(target_os = "macos");
+    let app_menu = Menu::new("Parquetry").items([
+        MenuItem::action("About Parquetry", About),
+        MenuItem::action("Check for Updates…", CheckForUpdates).disabled(!crate::updater::is_available()),
+        MenuItem::separator(),
+        MenuItem::action("Settings…", OpenSettings),
+        MenuItem::separator(),
+        MenuItem::action("Quit Parquetry", Quit),
+    ]);
+    let mut file_items = vec![
+        MenuItem::action("New Window", NewWindow),
+        MenuItem::action("New SQL Console", NewSqlConsole),
+        MenuItem::separator(),
+        MenuItem::action("Open…", OpenFile),
+        MenuItem::action("Open Folder…", OpenFolder),
+        MenuItem::action("Open S3 Location…", OpenS3),
+        MenuItem::action("Open URL or Path…", OpenUrl),
+        MenuItem::submenu(Menu::new("Open Recent").items(recent_items)),
+        MenuItem::separator(),
+        MenuItem::action("Export…", Export),
+        MenuItem::action("Compare…", Compare),
+        MenuItem::action("Reload", Reload),
+        MenuItem::separator(),
+        MenuItem::action("Close Tab", CloseTab),
+    ];
+    if !mac {
+        file_items.extend([
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
-            MenuItem::action("Quit Parquetry", Quit),
-        ]),
-        Menu::new("File").items([
-            MenuItem::action("New Window", NewWindow),
-            MenuItem::action("New SQL Console", NewSqlConsole),
-            MenuItem::separator(),
-            MenuItem::action("Open…", OpenFile),
-            MenuItem::action("Open Folder…", OpenFolder),
-            MenuItem::action("Open S3 Location…", OpenS3),
-            MenuItem::action("Open URL or Path…", OpenUrl),
-            MenuItem::submenu(Menu::new("Open Recent").items(recent_items)),
-            MenuItem::separator(),
-            MenuItem::action("Export…", Export),
-            MenuItem::action("Compare…", Compare),
-            MenuItem::action("Reload", Reload),
-            MenuItem::separator(),
-            MenuItem::action("Close Tab", CloseTab),
-        ]),
+            MenuItem::action("Exit", Quit),
+        ]);
+    }
+    let mut help_items = vec![
+        MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+        MenuItem::action("Parquetry Help", ShowHelp),
+    ];
+    if !mac {
+        if crate::updater::is_available() {
+            help_items.push(MenuItem::separator());
+            help_items.push(MenuItem::action("Check for Updates…", CheckForUpdates));
+        }
+        help_items.push(MenuItem::separator());
+        help_items.push(MenuItem::action("About Parquetry", About));
+    }
+    let mut menus = Vec::new();
+    if mac {
+        menus.push(app_menu);
+    }
+    menus.extend([
+        Menu::new("File").items(file_items),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", Undo, OsAction::Undo),
             MenuItem::os_action("Redo", Redo, OsAction::Redo),
@@ -167,33 +225,40 @@ pub fn set_menus(cx: &mut App) {
             MenuItem::action("Show Next Tab", NextTab),
             MenuItem::action("Show Previous Tab", PreviousTab),
         ]),
-        Menu::new("Help").items([
-            MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
-            MenuItem::action("Parquetry Help", ShowHelp),
-        ]),
+        Menu::new("Help").items(help_items),
     ]);
+    cx.set_menus(menus);
+    crate::workspace::reload_menu_bars(cx);
 }
 
-/// The shortcut list shown in the help dialog.
-pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("⌘O", "Open file"),
-    ("⇧⌘O", "Open S3 location"),
-    ("⌘L", "Open URL or path"),
-    ("⌘F", "Search all columns"),
-    ("⇧⌘F", "Add filter"),
-    ("⇧⌘K", "Clear filters"),
-    ("⌘G", "Go to row"),
-    ("⌘1 – ⌘4", "Data, Columns, Metadata, SQL"),
-    ("⌥⌘I", "Toggle inspector"),
-    ("⌘↵", "Run SQL"),
-    ("⌘C / ⇧⌘C", "Copy selection / with headers"),
-    ("⌘A", "Select all cells"),
-    ("Arrows, ⇧ Arrows", "Move / extend selection"),
-    ("⌘↑ / ⌘↓", "First / last row"),
-    ("Page Up / Down", "Scroll by a page"),
-    ("↵ or Space", "Inspect the selected value"),
-    ("⇧⌘E", "Export"),
-    ("⌘R", "Reload"),
-    ("⌘= / ⌘- / ⌘0", "Zoom in / out / reset"),
-    ("⌘W", "Close tab"),
-];
+/// The shortcut list shown in the help dialog, labelled for this platform.
+pub fn shortcut_list() -> Vec<(String, &'static str)> {
+    let k = key_label;
+    let (arrows, inspect) = if cfg!(target_os = "macos") {
+        ("Arrows, ⇧ Arrows", format!("{} or Space", k("enter")))
+    } else {
+        ("Arrows, Shift+Arrows", format!("{} or Space", k("enter")))
+    };
+    vec![
+        (k("secondary-o"), "Open file"),
+        (k("secondary-shift-o"), "Open S3 location"),
+        (k("secondary-l"), "Open URL or path"),
+        (k("secondary-f"), "Search all columns"),
+        (k("secondary-shift-f"), "Add filter"),
+        (k("secondary-shift-k"), "Clear filters"),
+        (k("secondary-g"), "Go to row"),
+        (format!("{} – {}", k("secondary-1"), k("secondary-4")), "Data, Columns, Metadata, SQL"),
+        (k(keys::TOGGLE_INSPECTOR), "Toggle inspector"),
+        (k("secondary-enter"), "Run SQL"),
+        (format!("{} / {}", k("secondary-c"), k("secondary-shift-c")), "Copy selection / with headers"),
+        (k("secondary-a"), "Select all cells"),
+        (arrows.to_string(), "Move / extend selection"),
+        (format!("{} / {}", k("secondary-up"), k("secondary-down")), "First / last row"),
+        ("Page Up / Down".to_string(), "Scroll by a page"),
+        (inspect, "Inspect the selected value"),
+        (k("secondary-shift-e"), "Export"),
+        (k(keys::RELOAD), "Reload"),
+        (format!("{} / {} / {}", k("secondary-="), k("secondary--"), k("secondary-0")), "Zoom in / out / reset"),
+        (k("secondary-w"), "Close tab"),
+    ]
+}

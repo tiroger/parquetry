@@ -109,7 +109,7 @@ fn keyboard_navigation_selection_and_copy(cx: &mut TestAppContext) {
         window.click_at("data-grid-root", point(px(120.), px(140.)), cx);
         let (row, _) = grid.read(cx).active_cell().expect("clicked cell");
         assert!(row < 3, "row {row}");
-        window.press("cmd-up", cx);
+        window.press("secondary-up", cx);
         window.press("down", cx);
         window.press("down", cx);
         window.press("right", cx);
@@ -119,7 +119,7 @@ fn keyboard_navigation_selection_and_copy(cx: &mut TestAppContext) {
         let (rows, cols) = grid.read(cx).selected_ranges().unwrap();
         assert_eq!(rows, 2..4);
         assert_eq!(cols, vec![1, 2]);
-        window.press("cmd-c", cx);
+        window.press("secondary-c", cx);
     })
     .unwrap();
     wait_until(cx, handle, &grid, "clipboard", |_| true);
@@ -136,7 +136,7 @@ fn keyboard_navigation_selection_and_copy(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.press("escape", cx);
         assert!(grid.read(cx).selection().is_none());
-        window.press("cmd-a", cx);
+        window.press("secondary-a", cx);
         let (rows, cols) = grid.read(cx).selected_ranges().unwrap();
         assert_eq!(rows, 0..10_000);
         assert_eq!(cols.len(), 4);
@@ -157,7 +157,7 @@ fn wheel_scrolling_and_jumping_to_the_end_of_millions_of_rows(cx: &mut TestAppCo
     assert!(top.is_none());
     cx.update_window(handle, |_, window, cx| {
         window.click_at("data-grid-root", point(px(120.), px(140.)), cx);
-        window.press("cmd-down", cx);
+        window.press("secondary-down", cx);
         assert_eq!(grid.read(cx).active_cell().map(|c| c.0), Some(2_999_999));
     })
     .unwrap();

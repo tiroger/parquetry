@@ -11,6 +11,7 @@ Outputs (next to this file):
     icon_1024.png   1024x1024 master PNG (transparent margin + shadow, Big Sur grid)
     AppIcon.icns    built with `iconutil` from a temporary AppIcon.iconset
                     (skipped with --no-icns or when iconutil is unavailable)
+    Parquetry.ico   Windows icon (16-256 px), embedded in parquetry.exe
 
 Design: a macOS Big Sur-style continuous-corner squircle (824 px body on a
 1024 px canvas) in deep navy, holding three table columns made of chevron
@@ -302,6 +303,14 @@ def build_icns(master: Image.Image, out: Path) -> None:
     print(f"wrote {out}")
 
 
+def build_ico(master: Image.Image, out: Path) -> None:
+    # Windows draws icons edge to edge: crop the macOS margin and shadow first.
+    margin = (1024 - 824) // 2 - 8
+    body = master.crop((margin, margin, 1024 - margin, 1024 - margin)).resize((256, 256), Image.LANCZOS)
+    body.save(out, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    print(f"wrote {out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out-dir", type=Path, default=HERE)
@@ -326,6 +335,7 @@ def main() -> None:
         strip.save(args.out_dir / "preview_sizes.png")
     if not args.no_icns:
         build_icns(master, args.out_dir / "AppIcon.icns")
+    build_ico(master, args.out_dir / "Parquetry.ico")
 
 
 if __name__ == "__main__":

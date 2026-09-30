@@ -9,7 +9,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, TitleBar, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::{AppMenuBar, DropdownMenu as _};
 use gpui_kit::*;
 use parquetry_engine::{Canceller, CompareOptions, Dataset, SourceSpec};
 
@@ -54,6 +54,8 @@ pub struct Workspace {
     next_id: u64,
     focus_handle: FocusHandle,
     ticker: Option<Task<()>>,
+    /// The in-window menu bar (Windows and Linux; macOS uses the system menu bar).
+    menu_bar: Option<Entity<AppMenuBar>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -72,6 +74,7 @@ impl Workspace {
             next_id: 1,
             focus_handle: cx.focus_handle(),
             ticker: None,
+            menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
             _subscriptions: subscriptions,
         }
     }
@@ -434,6 +437,15 @@ impl Workspace {
             .collect();
         let _ = window;
         TitleBar::new()
+            .when_some(self.menu_bar.clone(), |this, menu_bar| {
+                this.child(
+                    div()
+                        .h_full()
+                        .flex_shrink_0()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(menu_bar),
+                )
+            })
             .child(
                 h_flex()
                     .flex_1()
@@ -749,6 +761,28 @@ pub fn open_window(specs: Vec<SourceSpec>, cx: &mut App) -> Option<WeakEntity<Wo
             None
         }
     }
+}
+
+/// Refresh the in-window menu bars after `cx.set_menus` (no-op on macOS, where
+/// the system draws the menu bar).
+pub fn reload_menu_bars(cx: &mut App) {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    if let Some(menus) = cx.get_menus() {
+        gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(menus);
+    }
+    // Deferred: menus are rebuilt from inside workspace updates (e.g. recents).
+    cx.defer(|cx| {
+        let workspaces: Vec<_> = cx.default_global::<Workspaces>().0.iter().map(|(_, w)| w.clone()).collect();
+        for workspace in workspaces {
+            let _ = workspace.update(cx, |workspace, cx| {
+                if let Some(menu_bar) = &workspace.menu_bar {
+                    menu_bar.update(cx, |menu_bar, cx| menu_bar.reload(cx));
+                }
+            });
+        }
+    });
 }
 
 /// Focus the frontmost workspace and dispatch `action` to it. Returns false when

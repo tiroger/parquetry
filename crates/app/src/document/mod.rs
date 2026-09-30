@@ -34,6 +34,14 @@ pub use columns_tab::{ColumnsTab, RevealColumn};
 pub use inspector::Inspector;
 pub use metadata_tab::MetadataTab;
 
+const REVEAL_IN_FILE_MANAGER: &str = if cfg!(target_os = "macos") {
+    "Reveal in Finder"
+} else if cfg!(windows) {
+    "Show in File Explorer"
+} else {
+    "Show in File Manager"
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocTab {
     Data,
@@ -631,7 +639,7 @@ impl DatasetDocument {
             }
             DocTab::Data => self.focus_own_grid(window, cx),
             // The grid leaves the screen: keep focus in the document so its
-            // shortcuts (⌘1–4, ⌘F, ⇧⌘E…) still work.
+            // shortcuts (⌘1–4, ⌘F, ⇧⌘E… or Ctrl) still work.
             DocTab::Columns | DocTab::Metadata => window.focus(&self.focus_handle, cx),
         }
         cx.notify();
@@ -740,7 +748,7 @@ impl DatasetDocument {
                             .menu("Toggle Column Summaries", Box::new(ToggleSummaries))
                             .menu("Compute Exact Summaries", Box::new(ExactSummaries))
                             .separator()
-                            .item(PopupMenuItem::new("Reveal in Finder").disabled(path.is_none()).on_click({
+                            .item(PopupMenuItem::new(REVEAL_IN_FILE_MANAGER).disabled(path.is_none()).on_click({
                                 let path = path.clone();
                                 move |_, _, cx| {
                                     if let Some(p) = &path {

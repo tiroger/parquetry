@@ -12,7 +12,6 @@ path = "src/main.rs"
 parquetry-engine.workspace = true
 parquetry-grid.workspace = true
 gpui-kit.workspace = true
-gpui_apple.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -20,8 +19,14 @@ log.workspace = true
 dirs.workspace = true
 parking_lot.workspace = true
 futures.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_apple.workspace = true
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSBundle", "NSString", "NSObject"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 duckdb.workspace = true
