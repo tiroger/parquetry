@@ -211,6 +211,43 @@ fn header_click_emits_and_columns_hide_and_pin(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn clicking_a_chart_bar_emits_it(cx: &mut TestAppContext) {
+    let fx = fixture(1_000);
+    let (handle, grid) = open(cx, View::identity(&fx.dataset));
+    let events: Rc<RefCell<Vec<GridEvent>>> = Rc::default();
+    let sink = events.clone();
+    let _sub = cx.update(|cx| {
+        cx.subscribe(&grid, move |_, event: &GridEvent, _| sink.borrow_mut().push(event.clone()))
+    });
+    wait_until(cx, handle, &grid, "summaries", |s| {
+        matches!(s.summary(0), Some(SummaryState::Ready(_))) && matches!(s.summary(3), Some(SummaryState::Ready(_)))
+    });
+    // Bar `bar` of `bars` in displayed column `col`.
+    let click_bar = |cx: &mut TestAppContext, col: usize, bar: usize, bars: usize| {
+        cx.update_window(handle, |_, window, cx| {
+            let chart = grid.read(cx).chart_bounds(col).expect("chart painted");
+            let x = chart.origin.x + chart.size.width * ((bar as f32 + 0.5) / bars as f32);
+            let y = chart.origin.y + chart.size.height * 0.9;
+            window.click_at("data-grid-root", point(x, y), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    click_bar(cx, 3, 1, 3); // cat: a, b, c
+    click_bar(cx, 0, 19, 20); // id: histogram, last bin
+    let bars: Vec<(usize, usize)> = events
+        .borrow()
+        .iter()
+        .filter_map(|e| match e {
+            GridEvent::ChartBarClicked { column, bar, .. } => Some((*column, *bar)),
+            GridEvent::HeaderClicked { .. } => panic!("a bar click opened the header menu"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars, vec![(3, 1), (0, 19)]);
+}
+
+#[gpui_kit::test]
 fn new_views_keep_column_layout(cx: &mut TestAppContext) {
     let fx = fixture(1_000);
     let (handle, grid) = open(cx, View::identity(&fx.dataset));
@@ -225,5 +262,31 @@ fn new_views_keep_column_layout(cx: &mut TestAppContext) {
         let s = grid.read(cx);
         assert_eq!(s.column_width(1), 20.0);
         assert_eq!(loaded(s, 0, 0).as_deref(), Some("999"));
+    });
+}
+
+#[gpui_kit::test]
+fn column_arrangements_survive_schema_changes(cx: &mut TestAppContext) {
+    use parquetry_grid::ColumnArrangement;
+    let fx = fixture(100); // id, name, score, cat
+    let (_, grid) = open(cx, View::identity(&fx.dataset));
+    let saved = ColumnArrangement {
+        // "gone" no longer exists; "score" is new since this was saved.
+        order: vec!["cat".into(), "gone".into(), "id".into()],
+        pinned: 2,
+        hidden: vec!["name".into()],
+        widths: vec![("id".into(), 14.0), ("gone".into(), 30.0)],
+    };
+    cx.update(|cx| grid.update(cx, |g, cx| g.apply_column_arrangement(&saved, cx)));
+    cx.read(|cx| {
+        let g = grid.read(cx);
+        assert_eq!(g.display_columns(), &[3, 0, 2]);
+        assert_eq!(g.pinned_count(), 1, "the missing pinned column doesn't count");
+        assert!(g.is_hidden(1));
+        assert_eq!(g.column_width(0), 14.0);
+        let now = g.column_arrangement();
+        assert_eq!(now.order, vec!["cat", "id", "score"]);
+        assert_eq!(now.hidden, vec!["name"]);
+        assert_eq!(now.widths, vec![("id".to_string(), 14.0)]);
     });
 }

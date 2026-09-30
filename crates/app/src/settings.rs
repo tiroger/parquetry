@@ -43,6 +43,8 @@ pub struct Settings {
     /// Base font size in points; the whole interface scales with it.
     pub font_size: f32,
     pub show_summaries: bool,
+    /// Reopen the windows and tabs of the last session at launch.
+    pub reopen_last_session: bool,
     pub recents: Vec<RecentItem>,
     pub sql_history: Vec<String>,
 }
@@ -54,6 +56,7 @@ impl Default for Settings {
             appearance: Appearance::System,
             font_size: DEFAULT_FONT_SIZE,
             show_summaries: true,
+            reopen_last_session: true,
             recents: Vec::new(),
             sql_history: Vec::new(),
         }

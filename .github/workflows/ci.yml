@@ -36,6 +36,7 @@ jobs:
   windows:
     name: Windows build & test
     runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

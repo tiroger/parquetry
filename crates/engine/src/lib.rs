@@ -27,8 +27,8 @@ pub use query::{QueryOutcome, SqlTable, run_sql, split_statements, table_name_fo
 pub use s3::{S3Entry, S3Url, is_remote};
 pub use source::{Format, SourceSpec, format_from_extension};
 pub use stats::{
-    ChartKind, ColumnSummary, HistogramBin, StatsMode, TopValue, format_epoch_micros,
-    format_number, summarize,
+    ChartKind, ColumnSummary, HistogramBin, StatsMode, TopValue, ValueCounts, format_epoch_micros,
+    format_number, summarize, value_counts,
 };
 pub use types::{ColumnInfo, ColumnKind, short_type_label};
 pub use view::{DISPLAY_TEXT_LIMIT, Page, PageRequest, View, display_text};

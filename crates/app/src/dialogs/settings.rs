@@ -51,6 +51,7 @@ pub struct SettingsForm {
     appearance: Entity<SelectState<Vec<SharedString>>>,
     font_size: f32,
     show_summaries: bool,
+    reopen_last_session: bool,
     /// Sparkle's automatic-check preference; `None` in builds without updates.
     auto_update: Option<bool>,
     profile: Entity<SelectState<Vec<SharedString>>>,
@@ -92,6 +93,7 @@ impl SettingsForm {
             }),
             font_size: settings.font_size,
             show_summaries: settings.show_summaries,
+            reopen_last_session: settings.reopen_last_session,
             auto_update: crate::updater::automatically_checks(),
             profile: cx.new(|cx| {
                 SelectState::new(
@@ -117,6 +119,7 @@ impl SettingsForm {
         settings.appearance = Appearance::all()[appearance_ix.min(2)];
         settings.font_size = self.font_size;
         settings.show_summaries = self.show_summaries;
+        settings.reopen_last_session = self.reopen_last_session;
         if let Some(enabled) = self.auto_update {
             // Stored by Sparkle itself, not in settings.json.
             crate::updater::set_automatically_checks(enabled);
@@ -214,6 +217,17 @@ impl Render for SettingsForm {
                             .checked(self.show_summaries)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
                                 this.show_summaries = *on;
+                                cx.notify();
+                            })),
+                        cx,
+                    ))
+                    .child(row(
+                        "At launch",
+                        Switch::new("reopen-last-session")
+                            .label("Reopen windows and tabs from last time")
+                            .checked(self.reopen_last_session)
+                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                this.reopen_last_session = *on;
                                 cx.notify();
                             })),
                         cx,

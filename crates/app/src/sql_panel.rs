@@ -125,6 +125,15 @@ impl SqlPanel {
 
     #[cfg(test)]
     pub fn set_sql(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_query(sql, window, cx);
+    }
+
+    /// The query text in the editor.
+    pub fn query(&self, cx: &App) -> String {
+        self.editor.read(cx).value().to_string()
+    }
+
+    pub fn set_query(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| e.set_value(sql.to_string(), window, cx));
     }
 

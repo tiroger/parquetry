@@ -3,10 +3,12 @@
 pub mod compare;
 pub mod export;
 pub mod filter;
+pub mod goto_column;
 pub mod goto_row;
 pub mod info;
 pub mod open_location;
 pub mod settings;
+pub mod value_counts;
 
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;

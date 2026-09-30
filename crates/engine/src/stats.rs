@@ -12,7 +12,7 @@ use duckdb::Connection;
 use crate::dataset::{Base, Dataset, FILENAME_COLUMN, SampleTable};
 use crate::engine::{Job, Lane};
 use crate::error::Result;
-use crate::filter::qualified;
+use crate::filter::{Filter, FilterOp, qualified};
 use crate::sql::{ident, literal, literal_list};
 use crate::types::{ColumnInfo, ColumnKind};
 use crate::view::View;
@@ -125,6 +125,99 @@ impl ColumnSummary {
     }
 }
 
+impl ColumnSummary {
+    /// Filters that keep the rows behind one bar of the header chart (a histogram
+    /// bin or a top-value bar, indexed as drawn). `None` when the bar is empty or
+    /// can't be expressed as filters.
+    pub fn filters_for_bar(&self, bar: usize) -> Option<Vec<Filter>> {
+        match self.preferred_chart() {
+            ChartKind::Histogram => self.bin_filters(bar),
+            ChartKind::TopValues => self.top_value_filters(bar),
+            ChartKind::None => None,
+        }
+    }
+
+    /// `low <= x < high` (`<= high` for the last bin), matching how bins are counted.
+    /// Edges are rounded up to values of the column's type (down for the last bin's
+    /// inclusive end): exact for integers, dates, timestamps and decimals with up to
+    /// the displayed number of decimals, and neighbouring bins still partition the axis.
+    fn bin_filters(&self, bar: usize) -> Option<Vec<Filter>> {
+        let bin = self.histogram.get(bar)?;
+        if bin.count == 0 {
+            return None;
+        }
+        let last = bar + 1 == self.histogram.len();
+        const DAY_MICROS: f64 = 86_400_000_000.0;
+        let (low, high) = match self.kind {
+            // Integer x: x >= l <=> x >= ceil(l); x < h <=> x < ceil(h); x <= h <=> x <= floor(h).
+            ColumnKind::Integer => {
+                let high = if last { bin.end.floor() } else { bin.end.ceil() };
+                (format!("{}", bin.start.ceil() as i128), format!("{}", high as i128))
+            }
+            ColumnKind::Date => {
+                let day = |v: f64| format_epoch_micros(v * DAY_MICROS, true);
+                let high = if last { (bin.end / DAY_MICROS).floor() } else { (bin.end / DAY_MICROS).ceil() };
+                (day((bin.start / DAY_MICROS).ceil()), day(high))
+            }
+            ColumnKind::Timestamp => {
+                let high = if last { bin.end.floor() } else { bin.end.ceil() };
+                (timestamp_literal(bin.start.ceil() as i64), timestamp_literal(high as i64))
+            }
+            ColumnKind::Float | ColumnKind::Decimal => {
+                // Enough decimals to tell bins apart, without float noise.
+                let width = bin.end - bin.start;
+                let decimals = (2.0 - width.log10().floor()).clamp(0.0, 12.0) as usize;
+                let scale = 10f64.powi(decimals as i32);
+                let round = |v: f64, up: bool| {
+                    let scaled = v * scale;
+                    let r = if up { scaled.ceil() } else { scaled.floor() } / scale;
+                    format!("{r:.decimals$}")
+                };
+                (round(bin.start, true), round(bin.end, !last))
+            }
+            _ => return None,
+        };
+        let upper = if last { FilterOp::LessOrEqual } else { FilterOp::Less };
+        Some(vec![
+            Filter::new(&self.column, FilterOp::GreaterOrEqual, low),
+            Filter::new(&self.column, upper, high),
+        ])
+    }
+
+    /// One value (`= v`, or `IS NULL`), or "other values": everything not listed.
+    fn top_value_filters(&self, bar: usize) -> Option<Vec<Filter>> {
+        let top = &self.top_values;
+        if let Some(value) = top.get(bar) {
+            return Some(vec![match &value.value {
+                Some(v) => Filter::new(&self.column, FilterOp::Equals, v.clone()),
+                None => Filter::new(&self.column, FilterOp::IsNull, ""),
+            }]);
+        }
+        let shown: u64 = top.iter().map(|v| v.count).sum();
+        if bar != top.len() || self.scanned_rows <= shown {
+            return None;
+        }
+        let values: Vec<&str> = top.iter().filter_map(|v| v.value.as_deref()).collect();
+        // Lists are comma-separated and trimmed; such values can't be listed.
+        if values.is_empty() || values.iter().any(|v| v.contains(',') || v.trim() != *v) {
+            return None;
+        }
+        let mut filters = vec![Filter::new(&self.column, FilterOp::NotIn, values.join(", "))];
+        if top.iter().any(|v| v.value.is_none()) {
+            filters.push(Filter::new(&self.column, FilterOp::IsNotNull, ""));
+        }
+        Some(filters)
+    }
+}
+
+/// `YYYY-MM-DD HH:MM:SS[.ffffff]` for microseconds since the epoch.
+fn timestamp_literal(micros: i64) -> String {
+    let seconds = micros.div_euclid(1_000_000);
+    let fraction = micros.rem_euclid(1_000_000);
+    let text = format_epoch_micros(seconds as f64 * 1_000_000.0, false);
+    if fraction == 0 { text } else { format!("{text}.{fraction:06}") }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChartKind {
     Histogram,
@@ -138,6 +231,60 @@ pub fn summarize(view: &View, columns: Vec<usize>, mode: StatsMode) -> Job<Vec<C
     let view = view.clone();
     let engine = view.dataset.engine.clone();
     engine.run(Lane::Background, move |conn| summarize_now(conn, &view, &columns, mode))
+}
+
+/// The full frequency table of one column (or the values matching a search).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueCounts {
+    /// Most frequent first, then by value; at most the requested limit.
+    pub values: Vec<TopValue>,
+    /// Distinct values matching the search (all of them, not just those returned).
+    pub distinct: u64,
+    /// Rows holding a matching value.
+    pub matching_rows: u64,
+    /// Rows in the view.
+    pub rows: u64,
+}
+
+/// Count every distinct value of `column` in `view` (exactly: reads the whole view).
+/// `search` keeps values containing it, case-insensitively; empty keeps all, nulls included.
+pub fn value_counts(view: &View, column: usize, search: &str, limit: usize) -> Job<ValueCounts> {
+    let view = view.clone();
+    let search = search.trim().to_lowercase();
+    let engine = view.dataset.engine.clone();
+    engine.run(Lane::Task, move |conn| {
+        view.dataset.prepare_remote(conn)?;
+        let info = view
+            .dataset
+            .columns
+            .get(column)
+            .ok_or_else(|| crate::error::Error::other("No such column"))?;
+        let relation = choose_relation(conn, &view, StatsMode::Exact)?;
+        let filter = if search.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE contains(lower(v), {})", literal(&search))
+        };
+        let sql = format!(
+            "WITH g AS (SELECT CAST({c} AS VARCHAR) AS v, count(*) AS n FROM ({rel}) t GROUP BY v)
+             SELECT v, n, count(*) OVER () AS groups, sum(n) OVER () AS matched FROM g {filter}
+             ORDER BY n DESC, v NULLS LAST LIMIT {limit}",
+            c = ident(&info.name),
+            rel = relation.sql,
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut out = ValueCounts { values: Vec::new(), distinct: 0, matching_rows: 0, rows: view.row_count };
+        while let Some(row) = rows.next()? {
+            out.values.push(TopValue {
+                value: row.get::<_, Option<String>>(0)?,
+                count: row.get::<_, i64>(1)?.max(0) as u64,
+            });
+            out.distinct = row.get::<_, i64>(2)?.max(0) as u64;
+            out.matching_rows = row.get::<_, i128>(3)?.max(0) as u64;
+        }
+        Ok(out)
+    })
 }
 
 struct Relation {

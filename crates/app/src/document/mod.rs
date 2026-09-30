@@ -23,7 +23,7 @@ use gpui_kit::*;
 use parquetry_engine::{
     Canceller, ColumnKind, CopyFormat, Dataset, Filter, FilterOp, SortKey, StatsMode, View, ViewSpec,
 };
-use parquetry_grid::{Grid, GridEvent, GridState, Hit};
+use parquetry_grid::{Grid, GridEvent, GridState, Hit, SummaryState};
 
 use crate::actions::*;
 use crate::app_state::AppState;
@@ -52,6 +52,20 @@ pub enum DocTab {
 
 impl DocTab {
     const ALL: [DocTab; 4] = [DocTab::Data, DocTab::Columns, DocTab::Metadata, DocTab::Sql];
+
+    /// Stable name for saved sessions.
+    fn key(self) -> &'static str {
+        match self {
+            DocTab::Data => "data",
+            DocTab::Columns => "columns",
+            DocTab::Metadata => "metadata",
+            DocTab::Sql => "sql",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.key() == key)
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -103,6 +117,8 @@ pub struct DatasetDocument {
     materialize: Option<Task<()>>,
     error: Option<SharedString>,
     header_menu: Option<HeaderMenu>,
+    /// Row to scroll to once the view being built is shown (session restore).
+    pending_top: Option<u64>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -153,6 +169,7 @@ impl DatasetDocument {
             materialize: None,
             error: None,
             header_menu: None,
+            pending_top: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -227,7 +244,13 @@ impl DatasetDocument {
                 match result {
                     Ok(view) => {
                         let materialize = view.materialize_if_small();
-                        this.grid.update(cx, |g, cx| g.set_view(Some(view), false, cx));
+                        let top = this.pending_top.take();
+                        this.grid.update(cx, |g, cx| {
+                            g.set_view(Some(view), false, cx);
+                            if let Some(top) = top {
+                                g.scroll_to_row(top, cx);
+                            }
+                        });
                         if let Some(job) = materialize {
                             this.materialize = Some(cx.spawn(async move |_, _| {
                                 let _ = job.await;
@@ -256,6 +279,52 @@ impl DatasetDocument {
         cx.notify();
     }
 
+    /// What to save to reopen this tab later; `None` for data without a location
+    /// (query results).
+    pub fn session(&self, cx: &App) -> Option<crate::session::DatasetSession> {
+        let source = self.dataset.source()?;
+        let grid = self.grid.read(cx);
+        Some(crate::session::DatasetSession {
+            location: source.location.clone(),
+            format: source.format,
+            view: self.spec.clone(),
+            layout: grid.column_arrangement(),
+            tab: self.tab.key().to_string(),
+            top_row: grid.top_row(),
+            inspector: self.inspector_open,
+        })
+    }
+
+    /// Put back a saved state. Filters and sort keys on columns that no longer
+    /// exist are dropped.
+    pub fn restore(&mut self, state: &crate::session::DatasetSession, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_layout(&state.layout, cx);
+        let known = |name: &str| self.dataset.column_index(name).is_some();
+        let mut spec = state.view.clone();
+        spec.filters.retain(|f| known(&f.column));
+        spec.sort.retain(|k| known(&k.column));
+        if !spec.search.is_empty() {
+            let search = spec.search.clone();
+            self.search.update(cx, |input, cx| input.set_value(search, window, cx));
+        }
+        self.inspector_open = state.inspector;
+        if let Some(tab) = DocTab::from_key(&state.tab) {
+            self.set_tab(tab, window, cx);
+        }
+        if spec.is_identity() {
+            self.grid.update(cx, |g, cx| g.scroll_to_row(state.top_row, cx));
+        } else {
+            self.pending_top = Some(state.top_row);
+            self.apply_spec(spec, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Arrange columns as they were the last time this data was open.
+    pub fn restore_layout(&mut self, layout: &parquetry_grid::ColumnArrangement, cx: &mut Context<Self>) {
+        self.grid.update(cx, |g, cx| g.apply_column_arrangement(layout, cx));
+    }
+
     fn cancel_build(&mut self, cx: &mut Context<Self>) {
         if let Some(build) = self.build.take() {
             build.canceller.cancel();
@@ -276,6 +345,50 @@ impl DatasetDocument {
         let mut spec = self.spec.clone();
         spec.filters.retain(|f| f != &filter);
         spec.filters.push(filter);
+        self.apply_spec(spec, window, cx);
+    }
+
+    /// Replace the column's value filters (=, ≠, one of, not one of, null checks)
+    /// with `filters`, from the value counts panel.
+    pub fn replace_value_filters(&mut self, column: &str, filters: Vec<Filter>, window: &mut Window, cx: &mut Context<Self>) {
+        const VALUE_OPS: [FilterOp; 6] =
+            [FilterOp::Equals, FilterOp::NotEquals, FilterOp::In, FilterOp::NotIn, FilterOp::IsNull, FilterOp::IsNotNull];
+        let mut spec = self.spec.clone();
+        spec.filters.retain(|f| !(f.column == column && VALUE_OPS.contains(&f.op)));
+        spec.filters.extend(filters);
+        self.apply_spec(spec, window, cx);
+    }
+
+    /// Open the value counts of `column` (a dataset column index) in the current view.
+    pub fn open_value_counts(&mut self, column: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.grid.read(cx).view().cloned() else { return };
+        crate::dialogs::value_counts::open(cx.entity(), view, column, window, cx);
+    }
+
+    /// Keep the rows behind a header chart bar. Replaces the column's earlier bar
+    /// filters, so clicking bars again drills into the (re-summarized) data.
+    fn filter_to_chart_bar(&mut self, column: usize, bar: usize, anchor: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let filters = match self.grid.read(cx).summary(column) {
+            Some(SummaryState::Ready(summary)) => summary.filters_for_bar(bar),
+            _ => None,
+        };
+        let Some(filters) = filters.filter(|f| !f.is_empty()) else {
+            self.open_header_menu(column, anchor, window, cx);
+            return;
+        };
+        const BAR_OPS: [FilterOp; 7] = [
+            FilterOp::GreaterOrEqual,
+            FilterOp::Less,
+            FilterOp::LessOrEqual,
+            FilterOp::Equals,
+            FilterOp::NotIn,
+            FilterOp::IsNull,
+            FilterOp::IsNotNull,
+        ];
+        let name = filters[0].column.clone();
+        let mut spec = self.spec.clone();
+        spec.filters.retain(|f| !(f.column == name && BAR_OPS.contains(&f.op)));
+        spec.filters.extend(filters);
         self.apply_spec(spec, window, cx);
     }
 
@@ -361,6 +474,7 @@ impl DatasetDocument {
     fn on_grid_event(&mut self, _: &Entity<GridState>, event: &GridEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             GridEvent::HeaderClicked { column, anchor } => self.open_header_menu(*column, *anchor, window, cx),
+            GridEvent::ChartBarClicked { column, bar, anchor } => self.filter_to_chart_bar(*column, *bar, *anchor, window, cx),
             GridEvent::InspectCell { .. } => {
                 self.inspector_open = true;
                 self.inspector.update(cx, |i, cx| i.refresh(cx));
@@ -448,6 +562,15 @@ impl DatasetDocument {
                         .on_click(on(&doc, |this, name, window, cx| {
                             let column = this.dataset.column_index(name);
                             this.open_filter_dialog(column, window, cx)
+                        })),
+                )
+                .item(
+                    PopupMenuItem::new("Value Counts…")
+                        .icon(Icon::new(Lucide::ChartBarBig))
+                        .on_click(on(&doc, |this, name, window, cx| {
+                            if let Some(column) = this.dataset.column_index(name) {
+                                this.open_value_counts(column, window, cx);
+                            }
                         })),
                 )
                 .item(
@@ -590,6 +713,24 @@ impl DatasetDocument {
         crate::dialogs::filter::open(doc, columns, where_sql, column, window, cx);
     }
 
+    /// Show the Data tab with `column` (a dataset column index) selected and in view,
+    /// un-hiding it if needed.
+    pub fn reveal_column(&mut self, column: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab = DocTab::Data;
+        self.grid.update(cx, |g, cx| {
+            if g.is_hidden(column) {
+                g.set_hidden(column, false, cx);
+            }
+            g.reveal_column(column, cx);
+        });
+        self.focus_own_grid(window, cx);
+        cx.notify();
+    }
+
+    fn open_goto_column(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::dialogs::goto_column::open(cx.entity(), self.grid.clone(), window, cx);
+    }
+
     fn open_goto_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let grid = self.grid.clone();
         crate::dialogs::goto_row::open(grid, window, cx);
@@ -607,10 +748,7 @@ impl DatasetDocument {
             DocTab::Columns if self.columns_tab.is_none() => {
                 let tab = cx.new(|cx| ColumnsTab::new(self.grid.clone(), cx));
                 self._subscriptions.push(cx.subscribe_in(&tab, window, |this, _, event: &RevealColumn, window, cx| {
-                    this.tab = DocTab::Data;
-                    this.grid.update(cx, |g, cx| g.reveal_column(event.0, cx));
-                    this.focus_own_grid(window, cx);
-                    cx.notify();
+                    this.reveal_column(event.0, window, cx);
                 }));
                 self.columns_tab = Some(tab);
             }
@@ -742,6 +880,7 @@ impl DatasetDocument {
                     .dropdown_menu(move |menu, _, _| {
                         let path = path.clone();
                         menu.menu("Go to Row…", Box::new(GoToRow))
+                            .menu("Go to Column…", Box::new(GoToColumn))
                             .menu("Compare with…", Box::new(Compare))
                             .menu("Reload", Box::new(Reload))
                             .separator()
@@ -1073,6 +1212,15 @@ impl Render for DatasetDocument {
             .on_action(cx.listener(|this, _: &AddFilter, window, cx| this.open_filter_dialog(None, window, cx)))
             .on_action(cx.listener(|this, _: &ClearFilters, window, cx| this.clear_filters(window, cx)))
             .on_action(cx.listener(|this, _: &GoToRow, window, cx| this.open_goto_dialog(window, cx)))
+            .on_action(cx.listener(|this, _: &GoToColumn, window, cx| this.open_goto_column(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowValueCounts, window, cx| {
+                // The selected column, or the first one.
+                let grid = this.grid.read(cx);
+                let display = grid.selection().map(|s| s.head.col).unwrap_or(0);
+                if let Some(&column) = grid.display_columns().get(display) {
+                    this.open_value_counts(column, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Export, window, cx| this.open_export_dialog(window, cx)))
             .on_action(cx.listener(|_, _: &Compare, _, cx| cx.emit(DocumentEvent::Compare)))
             .on_action(cx.listener(|this, _: &ShowData, window, cx| this.set_tab(DocTab::Data, window, cx)))

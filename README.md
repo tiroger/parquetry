@@ -27,11 +27,16 @@ parquetry s3://bucket/path/         # S3
 - **Any size, no lag.** Only visible rows are read, on background threads. A
   600M-row file scrolls like a small one.
 - **Column summaries** in every header: histogram or top values, nulls, min/max,
-  distinct count. Exact up to 100M rows, sampled beyond.
+  distinct count. Exact up to 100M rows, sampled beyond. Click a bar to filter to
+  it; click again to drill down.
+- **Value counts**: every distinct value with its count, searchable; keep or
+  exclude the ones you pick.
 - **Sort, filter, search**: typed filters or SQL `WHERE`; copy cells as
   TSV/CSV/JSON/Markdown.
 - **Columns, Metadata and SQL tabs**: per-column stats, Parquet internals (row
   groups, encodings, compression), and DuckDB SQL across open files.
+- **Go to column** (⌘P) for wide tables, and **reopen where you left off**:
+  windows, tabs, filters, sort and column layout come back at launch.
 - **Export** the current view to Parquet, CSV, TSV or JSON.
 - **Compare** two datasets: schema, missing rows, changed values.
 - **S3**: bucket browser, AWS profiles and SSO, MinIO/R2 endpoints.

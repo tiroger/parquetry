@@ -201,7 +201,10 @@ fn header_tooltip(state: &Entity<GridState>, _window: &mut Window, cx: &mut App)
         }
     };
     let rows = summary_rows(&summary);
-    let highlight = item.and_then(|ix| hovered_item_text(&summary, ix));
+    let highlight = item.and_then(|ix| {
+        let text = hovered_item_text(&summary, ix)?;
+        Some(if summary.filters_for_bar(ix).is_some() { format!("{text} · click to filter") } else { text })
+    });
     let card = tooltip_card(cx, rows, format!("{} · {}", info.name, info.type_label()), highlight);
     Some(
         deferred(

@@ -11,4 +11,4 @@ mod state;
 pub use cache::CellState;
 pub use grid::*;
 pub use selection::{CellPos, Movement, Selection, SelectionKind};
-pub use state::{GridColumn, GridEvent, GridState, Hit, MAX_COPY_ROWS, SummaryState};
+pub use state::{ColumnArrangement, GridColumn, GridEvent, GridState, Hit, MAX_COPY_ROWS, SummaryState};

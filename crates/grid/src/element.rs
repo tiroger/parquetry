@@ -288,10 +288,13 @@ impl Element for GridElement {
             paint_scrollbars(prepaint, &theme, window);
         });
 
-        // Cursor feedback for resize handles.
+        // Cursor feedback for resize handles and clickable chart bars.
         let snap = &prepaint.snapshot;
         if snap.dragging_resize || matches!(snap.hover, Some(Hit::ResizeHandle(_))) {
             window.set_cursor_style(CursorStyle::ResizeLeftRight, &prepaint.hitbox);
+        } else if matches!(snap.hover, Some(Hit::HeaderChart(_, Some(_)))) {
+            // Chart bars filter when clicked.
+            window.set_cursor_style(CursorStyle::PointingHand, &prepaint.hitbox);
         }
         let _ = m;
         register_listeners(self.state.clone(), prepaint.hitbox.clone(), window);

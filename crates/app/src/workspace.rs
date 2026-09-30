@@ -18,6 +18,7 @@ use crate::app_state::AppState;
 use crate::compare_view::CompareView;
 use crate::document::{DatasetDocument, DocumentEvent};
 use crate::format;
+use crate::session::{DatasetSession, SessionKeeper, TabSession, WindowSession};
 use crate::sql_panel::{OpenDatasets, SqlEvent, SqlPanel};
 
 enum TabContent {
@@ -25,11 +26,14 @@ enum TabContent {
         spec: SourceSpec,
         started: Instant,
         canceller: Canceller,
+        /// State to put back once loaded (session restore, reload).
+        restore: Option<Box<DatasetSession>>,
         _task: Task<()>,
     },
     Failed {
         spec: SourceSpec,
         error: SharedString,
+        restore: Option<Box<DatasetSession>>,
     },
     Dataset(Entity<DatasetDocument>),
     Sql(Entity<SqlPanel>),
@@ -90,6 +94,11 @@ impl Workspace {
 
     /// Open a location in a new tab (or switch to it if it's already open).
     pub fn open(&mut self, spec: SourceSpec, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_restoring(spec, None, window, cx);
+    }
+
+    /// Open a location and put back a saved state once it has loaded.
+    fn open_restoring(&mut self, spec: SourceSpec, restore: Option<Box<DatasetSession>>, window: &mut Window, cx: &mut Context<Self>) {
         let existing = self.tabs.iter().position(|t| match &t.content {
             TabContent::Dataset(doc) => doc.read(cx).dataset.source() == Some(&spec),
             TabContent::Loading { spec: s, .. } => *s == spec,
@@ -100,7 +109,7 @@ impl Workspace {
             return;
         }
         let id = self.next_id();
-        let content = self.start_loading(id, spec, window, cx);
+        let content = self.start_loading(id, spec, restore, window, cx);
         self.tabs.push(WorkspaceTab {
             id,
             content,
@@ -111,11 +120,19 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_loading(&mut self, id: u64, spec: SourceSpec, window: &mut Window, cx: &mut Context<Self>) -> TabContent {
+    fn start_loading(
+        &mut self,
+        id: u64,
+        spec: SourceSpec,
+        restore: Option<Box<DatasetSession>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> TabContent {
         let engine = AppState::engine(cx);
         let job = Dataset::open(&engine, spec.clone());
         let canceller = job.canceller();
         let task_spec = spec.clone();
+        let task_restore = restore.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
             let result = job.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -125,6 +142,17 @@ impl Workspace {
                         AppState::update_settings(cx, |s| s.add_recent(&task_spec.location, task_spec.format));
                         crate::actions::set_menus(cx);
                         this.install_dataset(ix, dataset, None, window, cx);
+                        if let TabContent::Dataset(doc) = &this.tabs[ix].content {
+                            let layout = SessionKeeper::layout_for(&task_spec.location, cx);
+                            doc.update(cx, |doc, cx| match &task_restore {
+                                Some(state) => doc.restore(state, window, cx),
+                                None => {
+                                    if let Some(layout) = layout {
+                                        doc.restore_layout(&layout, cx);
+                                    }
+                                }
+                            });
+                        }
                     }
                     Err(error) if error.is_cancelled() => {
                         this.close_tab(ix, window, cx);
@@ -133,6 +161,7 @@ impl Workspace {
                         this.tabs[ix].content = TabContent::Failed {
                             spec: task_spec,
                             error: error.to_string().into(),
+                            restore: task_restore,
                         };
                     }
                 }
@@ -143,6 +172,7 @@ impl Workspace {
             spec,
             started: Instant::now(),
             canceller,
+            restore,
             _task: task,
         }
     }
@@ -173,6 +203,7 @@ impl Workspace {
             content: TabContent::Failed {
                 spec: SourceSpec::new(""),
                 error: "".into(),
+                restore: None,
             },
             _subscription: None,
         });
@@ -269,6 +300,55 @@ impl Workspace {
 
     // ------------------------------------------------------------ tabs
 
+    /// This window's tabs, for reopening later. Query results and comparisons
+    /// aren't kept (they have no location to reopen).
+    pub fn session(&self, cx: &App) -> WindowSession {
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        for (ix, tab) in self.tabs.iter().enumerate() {
+            let saved = match &tab.content {
+                TabContent::Dataset(doc) => doc.read(cx).session(cx).map(|s| TabSession::Dataset(Box::new(s))),
+                TabContent::Loading { spec, restore, .. } | TabContent::Failed { spec, restore, .. } => {
+                    (!spec.location.is_empty()).then(|| {
+                        TabSession::Dataset(restore.clone().unwrap_or_else(|| {
+                            Box::new(DatasetSession { location: spec.location.clone(), format: spec.format, ..Default::default() })
+                        }))
+                    })
+                }
+                TabContent::Sql(panel) => Some(TabSession::Sql { query: panel.read(cx).query(cx) }),
+                TabContent::Compare(_) => None,
+            };
+            if let Some(saved) = saved {
+                if ix <= self.active {
+                    active = tabs.len();
+                }
+                tabs.push(saved);
+            }
+        }
+        WindowSession { tabs, active }
+    }
+
+    /// Reopen saved tabs.
+    pub fn restore(&mut self, session: WindowSession, window: &mut Window, cx: &mut Context<Self>) {
+        for tab in session.tabs {
+            match tab {
+                TabSession::Dataset(state) => {
+                    let spec = SourceSpec { location: state.location.clone(), format: state.format };
+                    self.open_restoring(spec, Some(state), window, cx);
+                }
+                TabSession::Sql { query } => {
+                    self.open_sql_console(window, cx);
+                    if let Some(TabContent::Sql(panel)) = self.tabs.last().map(|t| &t.content) {
+                        panel.update(cx, |panel, cx| panel.set_query(&query, window, cx));
+                    }
+                }
+            }
+        }
+        if !self.tabs.is_empty() {
+            self.activate(session.active.min(self.tabs.len() - 1), window, cx);
+        }
+    }
+
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() {
             window.focus(&self.focus_handle, cx);
@@ -315,15 +395,19 @@ impl Workspace {
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ix = self.active;
         let Some(tab) = self.tabs.get(ix) else { return };
-        let spec = match &tab.content {
-            TabContent::Dataset(doc) => doc.read(cx).dataset.source().cloned(),
-            TabContent::Failed { spec, .. } => Some(spec.clone()),
-            _ => None,
+        // Keep filters, sort and layout across the reload.
+        let (spec, restore) = match &tab.content {
+            TabContent::Dataset(doc) => {
+                let doc = doc.read(cx);
+                (doc.dataset.source().cloned(), doc.session(cx).map(Box::new))
+            }
+            TabContent::Failed { spec, restore, .. } => (Some(spec.clone()), restore.clone()),
+            _ => (None, None),
         };
         let Some(spec) = spec.filter(|s| !s.location.is_empty()) else { return };
         let id = tab.id;
         OpenDatasets::unregister(id, cx);
-        let content = self.start_loading(id, spec, window, cx);
+        let content = self.start_loading(id, spec, restore, window, cx);
         self.tabs[ix].content = content;
         self.tabs[ix]._subscription = None;
         self.ensure_ticker(cx);
@@ -620,7 +704,7 @@ impl Workspace {
                     )
                     .into_any_element()
             }
-            TabContent::Failed { spec, error } => v_flex()
+            TabContent::Failed { spec, error, .. } => v_flex()
                 .size_full()
                 .items_center()
                 .justify_center()
@@ -763,6 +847,30 @@ pub fn open_window(specs: Vec<SourceSpec>, cx: &mut App) -> Option<WeakEntity<Wo
     }
 }
 
+/// Reopen a saved window's tabs in `workspace`.
+pub fn restore_window(workspace: &Entity<Workspace>, session: WindowSession, cx: &mut App) {
+    let handle = cx
+        .default_global::<Workspaces>()
+        .0
+        .iter()
+        .find(|(_, w)| w.entity_id() == workspace.entity_id())
+        .map(|(handle, _)| *handle);
+    if let Some(handle) = handle {
+        let _ = handle.update(cx, |_, window, cx| workspace.update(cx, |w, cx| w.restore(session, window, cx)));
+    }
+}
+
+/// Open workspaces, frontmost window first.
+pub fn workspaces_front_to_back(cx: &App) -> Vec<Entity<Workspace>> {
+    let Some(registry) = cx.try_global::<Workspaces>() else { return Vec::new() };
+    let mut open: Vec<(AnyWindowHandle, Entity<Workspace>)> =
+        registry.0.iter().filter_map(|(handle, weak)| Some((*handle, weak.upgrade()?))).collect();
+    if let Some(stack) = cx.window_stack() {
+        open.sort_by_key(|(handle, _)| stack.iter().position(|h| h.window_id() == handle.window_id()).unwrap_or(usize::MAX));
+    }
+    open.into_iter().map(|(_, workspace)| workspace).collect()
+}
+
 /// Refresh the in-window menu bars after `cx.set_menus` (no-op on macOS, where
 /// the system draws the menu bar).
 pub fn reload_menu_bars(cx: &mut App) {
@@ -865,6 +973,10 @@ impl Workspace {
 
     pub(crate) fn active_index(&self) -> usize {
         self.active
+    }
+
+    pub(crate) fn activate_for_test(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate(ix, window, cx);
     }
 
     /// "loading", "failed", "dataset", "sql" or "compare" for each tab.

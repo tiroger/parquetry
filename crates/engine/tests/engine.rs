@@ -789,3 +789,118 @@ fn distinct_counts_are_exact_and_never_exceed_rows() {
     assert_eq!(stats[1].distinct, Some(5));
     assert_eq!(stats[2].distinct, Some(900)); // values i % 1000 where i % 10 != 0
 }
+
+#[test]
+fn chart_bars_filter_to_exactly_their_rows() {
+    let fx = Fixture::new();
+    let path = fx.write(
+        "SELECT i AS n,
+                (i * 0.37) % 91.3 AS f,
+                CAST((i % 700) / 7.0 AS DECIMAL(10,2)) AS d,
+                DATE '2020-01-01' + CAST(i % 900 AS INTEGER) AS day,
+                TIMESTAMP '2024-03-01 00:00:00' + to_microseconds(CAST(i AS BIGINT) * 7_777_777) AS ts,
+                CASE WHEN i % 11 = 0 THEN NULL ELSE ['red', 'green', 'blue', 'amber, dark'][1 + i % 4] END AS color,
+                CASE i % 3 WHEN 0 THEN 'x' WHEN 1 THEN 'y' ELSE NULL END AS small
+         FROM range(20000) r(i)",
+        "bars.parquet",
+        "",
+    );
+    let ds = open(&fx, &path);
+    let columns: Vec<usize> = (0..ds.columns.len()).collect();
+    let summaries = summarize(&View::identity(&ds), columns, StatsMode::Exact).wait().unwrap();
+    let count = |filters: Vec<Filter>| View::build(&ds, ViewSpec { filters, ..Default::default() }).wait().unwrap().row_count;
+
+    for summary in &summaries {
+        match summary.preferred_chart() {
+            ChartKind::Histogram => {
+                let mut total = 0;
+                for (ix, bin) in summary.histogram.iter().enumerate() {
+                    let Some(filters) = summary.filters_for_bar(ix) else {
+                        assert_eq!(bin.count, 0, "{} bin {ix} has rows but no filters", summary.column);
+                        continue;
+                    };
+                    let n = count(filters.clone());
+                    total += n;
+                    if summary.kind == ColumnKind::Float || summary.kind == ColumnKind::Decimal {
+                        // Edges are rounded to readable values: allow a sliver of drift.
+                        let slack = (bin.count / 50).max(2);
+                        assert!(n.abs_diff(bin.count) <= slack, "{} bin {ix}: {n} rows, bar says {} ({filters:?})", summary.column, bin.count);
+                    } else {
+                        assert_eq!(n, bin.count, "{} bin {ix} ({filters:?})", summary.column);
+                    }
+                }
+                // Bins partition the non-null rows.
+                assert_eq!(total, summary.rows - summary.scanned_nulls, "{}", summary.column);
+            }
+            ChartKind::TopValues => {
+                let shown: u64 = summary.top_values.iter().map(|v| v.count).sum();
+                for (ix, value) in summary.top_values.iter().enumerate() {
+                    let filters = summary.filters_for_bar(ix).unwrap();
+                    assert_eq!(count(filters), value.count, "{} = {:?}", summary.column, value.value);
+                }
+                if let Some(filters) = summary.filters_for_bar(summary.top_values.len()) {
+                    assert_eq!(count(filters), summary.rows - shown, "{} other", summary.column);
+                }
+            }
+            ChartKind::None => {}
+        }
+    }
+    let kind = |name: &str| summaries.iter().find(|s| s.column == name).unwrap().preferred_chart();
+    for name in ["n", "f", "d", "day", "ts"] {
+        assert_eq!(kind(name), ChartKind::Histogram, "{name}");
+    }
+    assert_eq!(kind("color"), ChartKind::TopValues);
+    assert_eq!(kind("small"), ChartKind::TopValues);
+    // "amber, dark" can't go in a comma-separated list, so "other" has no filter;
+    // the null bar does.
+    let color = summaries.iter().find(|s| s.column == "color").unwrap();
+    let null_bar = color.top_values.iter().position(|v| v.value.is_none()).unwrap();
+    assert_eq!(color.filters_for_bar(null_bar).unwrap(), vec![Filter::new("color", FilterOp::IsNull, "")]);
+}
+
+#[test]
+fn value_counts_are_complete_exact_and_searchable() {
+    let fx = Fixture::new();
+    let path = fx.write(
+        "SELECT i AS id, CASE WHEN i % 10 = 0 THEN NULL ELSE 'v' || (i % 37) END AS tag FROM range(50000) r(i)",
+        "vc.parquet",
+        "",
+    );
+    let ds = open(&fx, &path);
+    let tag = col(&ds, "tag");
+    let all = value_counts(&View::identity(&ds), tag, "", 1000).wait().unwrap();
+    let duck = fx.duck();
+    let distinct: i64 = duck.query_row(&format!("SELECT count(DISTINCT coalesce(tag, '<null>')) FROM '{path}'"), [], |r| r.get(0)).unwrap();
+    assert_eq!(all.distinct, distinct as u64, "every value, null included");
+    assert_eq!(all.values.len(), distinct as usize);
+    assert_eq!(all.matching_rows, 50_000);
+    assert_eq!(all.rows, 50_000);
+    assert_eq!(all.values.iter().map(|v| v.count).sum::<u64>(), 50_000);
+    assert!(all.values.windows(2).all(|w| w[0].count >= w[1].count), "most frequent first");
+    let nulls = all.values.iter().find(|v| v.value.is_none()).unwrap();
+    assert_eq!(nulls.count, 5_000);
+
+    // A limit keeps the most frequent but still reports the totals.
+    let top = value_counts(&View::identity(&ds), tag, "", 5).wait().unwrap();
+    assert_eq!(top.values.len(), 5);
+    assert_eq!(top.distinct, all.distinct);
+    assert_eq!(top.values[..], all.values[..5]);
+
+    // Search is case-insensitive, over all values (not just the top).
+    let found = value_counts(&View::identity(&ds), tag, " V3 ", 1000).wait().unwrap();
+    let mut names: Vec<String> = found.values.iter().filter_map(|v| v.value.clone()).collect();
+    names.sort();
+    assert_eq!(names, ["v3", "v30", "v31", "v32", "v33", "v34", "v35", "v36"]);
+    assert_eq!(found.distinct, 8);
+    assert_eq!(found.matching_rows, found.values.iter().map(|v| v.count).sum::<u64>());
+
+    // Filtered views count only their rows.
+    let filtered = View::build(&ds, ViewSpec { filters: vec![Filter::new("id", FilterOp::Less, "100")], ..Default::default() })
+        .wait()
+        .unwrap();
+    let counts = value_counts(&filtered, tag, "", 1000).wait().unwrap();
+    assert_eq!(counts.rows, 100);
+    assert_eq!(counts.values.iter().map(|v| v.count).sum::<u64>(), 100);
+    let none = value_counts(&filtered, tag, "zzz", 1000).wait().unwrap();
+    assert_eq!((none.values.len(), none.distinct, none.matching_rows), (0, 0, 0));
+}

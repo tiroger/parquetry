@@ -9,6 +9,7 @@ parquetry-engine.workspace = true
 gpui-kit.workspace = true
 parking_lot.workspace = true
 log.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

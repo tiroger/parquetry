@@ -12,6 +12,7 @@ mod format;
 // Used off macOS only; compiled everywhere so its tests run on every platform.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod instance;
+mod session;
 mod settings;
 mod sql_panel;
 mod theme;
@@ -101,7 +102,17 @@ fn main() {
         })
         .detach();
 
-        workspace::open_window(initial, cx);
+        let session = session::SessionKeeper::start(cx);
+        if initial.is_empty() && session::should_restore(cx) && !session.windows.is_empty() {
+            // Front window last, so it ends up in front.
+            for saved in session.windows.into_iter().rev() {
+                if let Some(workspace) = workspace::open_window(Vec::new(), cx).and_then(|w| w.upgrade()) {
+                    workspace::restore_window(&workspace, saved, cx);
+                }
+            }
+        } else {
+            workspace::open_window(initial, cx);
+        }
         cx.activate(true);
     });
 }
@@ -141,7 +152,7 @@ fn register_global_actions(cx: &mut App) {
         )*};
     }
     to_front!(
-        CloseTab, NextTab, PreviousTab, Reload, Compare, Export, Find, GoToRow, AddFilter, ClearFilters,
+        CloseTab, NextTab, PreviousTab, Reload, Compare, Export, Find, GoToRow, GoToColumn, ShowValueCounts, AddFilter, ClearFilters,
         ShowData, ShowColumns, ShowMetadata, ShowSql, ToggleInspector, ToggleSummaries, ExactSummaries,
         ShowShortcuts, ShowHelp,
     );

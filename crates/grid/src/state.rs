@@ -67,6 +67,12 @@ pub enum GridEvent {
         column: usize,
         anchor: Bounds<Pixels>,
     },
+    /// A bar of a header chart was clicked (`bar` indexes the bars as drawn).
+    ChartBarClicked {
+        column: usize,
+        bar: usize,
+        anchor: Bounds<Pixels>,
+    },
     /// Show the full value of a cell (double-click, Enter).
     InspectCell { row: u64, column: usize },
     SelectionChanged,
@@ -82,7 +88,8 @@ pub(crate) enum Drag {
     Resize { col: usize, start_x: f32, start_width: f32 },
     VerticalThumb { grab: f32 },
     HorizontalThumb { grab: f32 },
-    HeaderPress { col: usize, start: Point<Pixels> },
+    /// `bar`: the chart bar under the pointer when the press started.
+    HeaderPress { col: usize, start: Point<Pixels>, bar: Option<usize> },
 }
 
 /// Sizes derived from the window's rem size and fonts, recomputed each frame.
@@ -251,6 +258,20 @@ pub struct GridState {
     /// Last visible range the fetcher was asked about, to avoid redundant work.
     requested: Option<(u64, Range<u64>, Range<usize>)>,
     loading_blocks_failed: HashSet<BlockKey>,
+}
+
+/// How columns are arranged, by name, so it can be saved and applied to the same
+/// data later (even if columns were added or removed meanwhile).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ColumnArrangement {
+    /// Shown columns in display order.
+    pub order: Vec<String>,
+    /// How many of `order` are pinned to the left.
+    pub pinned: usize,
+    pub hidden: Vec<String>,
+    /// Widths set by hand or by fitting, in rem.
+    pub widths: Vec<(String, f32)>,
 }
 
 impl EventEmitter<GridEvent> for GridState {}
@@ -606,6 +627,60 @@ impl GridState {
     }
 
     // ------------------------------------------------------------ columns
+
+    /// The current column arrangement.
+    pub fn column_arrangement(&self) -> ColumnArrangement {
+        let name = |ix: &usize| self.columns[*ix].info.name.clone();
+        ColumnArrangement {
+            order: self.display.iter().map(name).collect(),
+            pinned: self.pinned,
+            hidden: (0..self.columns.len()).filter(|c| !self.display.contains(c)).map(|c| name(&c)).collect(),
+            widths: self
+                .columns
+                .iter()
+                .filter(|c| !c.auto_width)
+                .map(|c| (c.info.name.clone(), c.width))
+                .collect(),
+        }
+    }
+
+    /// Arrange columns as saved. Unknown names are ignored; columns the layout doesn't
+    /// mention (new since it was saved) are shown at the end.
+    pub fn apply_column_arrangement(&mut self, layout: &ColumnArrangement, cx: &mut Context<Self>) {
+        let index = |name: &str| self.columns.iter().position(|c| c.info.name == name);
+        let mut display: Vec<usize> = Vec::with_capacity(self.columns.len());
+        let mut pinned = 0;
+        for (ix, name) in layout.order.iter().enumerate() {
+            if let Some(column) = index(name).filter(|c| !display.contains(c)) {
+                display.push(column);
+                if ix < layout.pinned {
+                    pinned += 1;
+                }
+            }
+        }
+        let hidden: Vec<usize> = layout.hidden.iter().filter_map(|n| index(n)).collect();
+        for column in 0..self.columns.len() {
+            if !display.contains(&column) && !hidden.contains(&column) {
+                display.push(column);
+            }
+        }
+        for (name, width) in &layout.widths {
+            if let Some(c) = self.columns.iter_mut().find(|c| c.info.name == *name) {
+                c.width = width.clamp(2.5, 80.0);
+                c.auto_width = false;
+            }
+        }
+        self.display = display;
+        self.pinned = pinned;
+        self.selection = self.selection.and_then(|s| s.clamped(self.row_count(), self.display.len()));
+        self.requested = None;
+        cx.notify();
+    }
+
+    /// The first row on screen.
+    pub fn top_row(&self) -> u64 {
+        self.top.floor().max(0.0) as u64
+    }
 
     pub fn column_width(&self, column: usize) -> f32 {
         self.columns.get(column).map_or(8.0, |c| c.width)
@@ -1054,7 +1129,11 @@ impl GridState {
                     );
                     self.drag = Some(Drag::SelectColumns);
                 } else {
-                    self.drag = Some(Drag::HeaderPress { col, start: event.position });
+                    let bar = match hit {
+                        Hit::HeaderChart(..) => self.chart_item_at(col, event.position, &frame),
+                        _ => None,
+                    };
+                    self.drag = Some(Drag::HeaderPress { col, start: event.position, bar });
                 }
             }
             Hit::RowHeader(row) => {
@@ -1124,13 +1203,14 @@ impl GridState {
         let Some(drag) = self.drag.take() else {
             return;
         };
-        if let Drag::HeaderPress { col, start } = drag {
+        if let Drag::HeaderPress { col, start, bar } = drag {
             let moved = (f32::from(event.position.x - start.x)).abs() + (f32::from(event.position.y - start.y)).abs();
             if moved < 4.0
                 && let (Some(frame), Some(&column)) = (&self.frame, self.display.get(col)) {
-                    cx.emit(GridEvent::HeaderClicked {
-                        column,
-                        anchor: frame.header_bounds(col),
+                    let anchor = frame.header_bounds(col);
+                    cx.emit(match bar {
+                        Some(bar) => GridEvent::ChartBarClicked { column, bar, anchor },
+                        None => GridEvent::HeaderClicked { column, anchor },
                     });
                 }
         }
@@ -1204,7 +1284,7 @@ impl GridState {
                     self.set_selection(Some(selection), cx);
                 }
             }
-            Drag::HeaderPress { col, start } => {
+            Drag::HeaderPress { col, start, .. } => {
                 // Dragging a header horizontally reorders it.
                 let dx = f32::from(position.x - start.x);
                 if dx.abs() > frame.metrics.rem {
@@ -1212,7 +1292,7 @@ impl GridState {
                     if let Some(target) = frame.layout.column_at(x, frame.scroll_x)
                         && target != col {
                             self.move_column(col, target, cx);
-                            self.drag = Some(Drag::HeaderPress { col: target, start: position });
+                            self.drag = Some(Drag::HeaderPress { col: target, start: position, bar: None });
                         }
                 }
             }
@@ -1257,6 +1337,20 @@ impl GridState {
             return Some((fraction * summary.histogram.len() as f32) as usize);
         }
         crate::chart::top_value_at(summary, fraction)
+    }
+
+    /// Bounds of a displayed column's header chart relative to the grid element
+    /// (`data-grid-root`), as last painted.
+    pub fn chart_bounds(&self, display_col: usize) -> Option<Bounds<Pixels>> {
+        let frame = self.frame.as_ref()?;
+        let header = frame.header_bounds(display_col);
+        let (top, bottom) = frame.chart_rows();
+        let inset = frame.metrics.padding;
+        let origin = header.origin - frame.bounds.origin;
+        Some(Bounds::new(
+            point(origin.x + px(inset), origin.y + px(top)),
+            size(header.size.width - px(inset * 2.0), px(bottom - top)),
+        ))
     }
 
     pub(crate) fn set_frame(&mut self, frame: Frame) {
