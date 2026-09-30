@@ -15,7 +15,7 @@ cask "parquetry" do
     strategy :github_latest
   end
 
-  auto_updates false
+  auto_updates true # Sparkle
   depends_on macos: :ventura # macOS 13 or newer
 
   app "Parquetry.app"
@@ -24,6 +24,8 @@ cask "parquetry" do
   zap trash: [
     "~/Library/Application Support/Parquetry",
     "~/Library/Caches/Parquetry",
+    "~/Library/Caches/io.parquetry.app",
+    "~/Library/HTTPStorages/io.parquetry.app",
     "~/Library/Preferences/io.parquetry.app.plist",
     "~/Library/Saved Application State/io.parquetry.app.savedState",
   ]

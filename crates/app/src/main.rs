@@ -9,6 +9,7 @@ mod format;
 mod settings;
 mod sql_panel;
 mod theme;
+mod updater;
 mod workspace;
 
 #[cfg(test)]
@@ -64,6 +65,7 @@ fn main() {
         theme::apply(cx);
         actions::bind_keys(cx);
         register_global_actions(cx);
+        updater::start();
         actions::set_menus(cx);
 
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -90,6 +92,7 @@ fn main() {
 
 fn register_global_actions(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &CheckForUpdates, _| updater::check_for_updates());
     cx.on_action(|_: &NewWindow, cx| {
         workspace::open_window(Vec::new(), cx);
     });

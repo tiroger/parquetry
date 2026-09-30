@@ -6,13 +6,15 @@ Everything needed to turn the `parquetry` binary into a signed, notarized
 | Path | What |
 |---|---|
 | `assets/icon/make_icon.py` | Renders `icon_1024.png` and `AppIcon.icns` (`uv run --with pillow python assets/icon/make_icon.py`) |
-| `packaging/Info.plist.template` | App Info.plist (`@VERSION@`, `@BUILD@`, `@YEAR@`), document types, UTIs, `parquetry://` scheme |
+| `packaging/Info.plist.template` | App Info.plist (`@VERSION@`, `@BUILD@`, `@YEAR@`, `@SPARKLE_FEED_URL@`, `@SPARKLE_PUBLIC_KEY@`), document types, UTIs, `parquetry://` scheme |
+| `packaging/sparkle_public_key.txt` | EdDSA public key that update archives must be signed with |
 | `packaging/Parquetry.entitlements` | Hardened-runtime entitlements for the app |
 | `packaging/bin/parquetry` | CLI launcher, shipped as `Contents/Resources/bin/parquetry` |
 | `packaging/homebrew/parquetry.rb` | Cask template, rendered by `scripts/update-cask.sh` |
 | `scripts/bundle.sh` | Build + assemble + sign `target/dist/Parquetry.app` |
 | `scripts/package.sh` | `target/dist/Parquetry-<v>.zip` and `.dmg` and `SHA256SUMS` |
 | `scripts/notarize.sh` | Notarize and staple the app and dmg |
+| `scripts/appcast.sh` | Sign the zip and write the Sparkle update feed `target/dist/appcast.xml` |
 | `scripts/update-cask.sh` | Render the cask with the real version and sha256 |
 | `.github/workflows/ci.yml` / `release.yml` | CI, and a tag-triggered release pipeline |
 
@@ -29,7 +31,9 @@ scripts/package.sh                        # zip + dmg + SHA256SUMS
 `SKIP_QUICKLOOK=1`, `CODESIGN_IDENTITY` (default `-`, ad-hoc),
 `DUCKDB_EXT_LAYOUT` (`none` default, `repo`, `raw`), `DUCKDB_EXTENSIONS`
 (default `httpfs`), `DUCKDB_VERSION` (default: from `libduckdb-sys` in
-`Cargo.lock`), `BUILD_NUMBER`. The Quick Look extension is built with
+`Cargo.lock`), `BUILD_NUMBER` (default: git commit count; Sparkle compares it
+to decide what's newer), `SKIP_SPARKLE=1`, `SPARKLE_VERSION` (default 2.10.0),
+`SPARKLE_FEED_URL`, `SPARKLE_PUBLIC_KEY`. The Quick Look extension is built with
 `scripts/build-quicklook.sh` and embedded at `Contents/PlugIns/` when it builds;
 if it doesn't, the bundle is made without it and a warning is printed.
 
@@ -39,6 +43,7 @@ Bundle layout:
 Parquetry.app/Contents/
   Info.plist  PkgInfo
   MacOS/parquetry
+  Frameworks/Sparkle.framework                                  automatic updates
   PlugIns/ParquetryQuickLook.appex
   Resources/AppIcon.icns
   Resources/bin/parquetry                                       CLI launcher
@@ -47,7 +52,7 @@ Parquetry.app/Contents/
   Resources/duckdb_extensions/v1.5.5/osx_arm64/httpfs.duckdb_extension.gz (repo layout)
 ```
 
-Downloads are cached in `target/duckdb_extensions_cache/`.
+Downloads are cached in `target/duckdb_extensions_cache/` and `target/sparkle_cache/`.
 
 ### Testing an ad-hoc build
 
@@ -88,6 +93,15 @@ xattr -dr com.apple.quarantine /Applications/Parquetry.app
    | `APPLE_TEAM_ID` | 10-character team ID |
    | `APPLE_APP_PASSWORD` | the app-specific password |
    | `TAP_GITHUB_TOKEN` | fine-grained PAT with *Contents: read & write* on `OWNER/homebrew-tap` |
+   | `SPARKLE_PRIVATE_KEY` | contents of `~/.parquetry/sparkle_ed25519_private.key` (see below) |
+5. **Update signing key.** Sparkle only installs updates signed with the EdDSA
+   key whose public half is in `packaging/sparkle_public_key.txt`. The private
+   key lives in `~/.parquetry/sparkle_ed25519_private.key` and must never be
+   committed. **Back it up** (e.g. in a password manager): if it's lost,
+   installed copies can't accept updates anymore and users must reinstall by
+   hand. To make a new pair (only for a fresh start), run
+   `target/sparkle_cache/2.10.0/bin/generate_keys --account parquetry -x key.txt`
+   and put the printed public key in `packaging/sparkle_public_key.txt`.
 
 ## Signed local release
 
@@ -96,6 +110,7 @@ export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 UNIVERSAL=1 scripts/bundle.sh
 scripts/package.sh
 NOTARY_PROFILE=parquetry-notary scripts/notarize.sh      # or APPLE_ID/APPLE_TEAM_ID/APPLE_APP_PASSWORD
+scripts/appcast.sh                                        # -> target/dist/appcast.xml
 scripts/update-cask.sh 0.1.0 target/dist/Parquetry-0.1.0.zip   # -> target/dist/parquetry.rb
 ```
 
@@ -108,7 +123,8 @@ submissions print the notary log.
 Push a tag matching the workspace version: `git tag v0.1.0 && git push origin v0.1.0`.
 `release.yml` checks the tag against `Cargo.toml`, imports the certificate into a
 temporary keychain, runs `UNIVERSAL=1 scripts/bundle.sh`, `package.sh` and
-`notarize.sh`, uploads the zip, dmg and `SHA256SUMS` to the GitHub release, and
+`notarize.sh` and `appcast.sh`, uploads the zip, dmg, `SHA256SUMS` and
+`appcast.xml` to the GitHub release, and
 commits the rendered cask to `OWNER/homebrew-tap`. It skips that last step if
 `TAP_GITHUB_TOKEN` isn't set.
 
@@ -134,6 +150,27 @@ parquetry data.parquet ./partitioned_dir 'logs/*.parquet' s3://bucket/key.parque
 Local files and folders are opened with `open -a Parquetry.app <abs path>`.
 URLs (`s3://`, `gs://`, `http(s)://`, …) and quoted globs are sent as
 `parquetry://open?url=<percent-encoded>`.
+
+## Automatic updates
+
+Release bundles embed [Sparkle](https://sparkle-project.org) 2. The app checks
+`SUFeedURL` once a day (users can turn that off in Settings, or use
+*Parquetry ▸ Check for Updates…*). The default feed is
+`https://github.com/tiroger/parquetry/releases/latest/download/appcast.xml`, so
+**each release must include `appcast.xml`** and be the repo's *latest* release,
+and the release assets must be publicly downloadable. With a private repo the
+feed returns 404 and the app quietly finds no updates. To host the feed
+elsewhere, build with `SPARKLE_FEED_URL=…` and run `appcast.sh` with
+`DOWNLOAD_URL_PREFIX=…`.
+
+Sparkle checks the zip's EdDSA signature and that the new app carries the same
+Developer ID, then swaps the whole `.app` and relaunches. The build number
+(`CFBundleVersion`) must increase from one release to the next. Homebrew users
+can update either way: the cask has `auto_updates true`, so `brew upgrade`
+leaves Sparkle-updated installs alone.
+
+Builds without `Sparkle.framework` (`SKIP_SPARKLE=1`, `cargo run`) run normally,
+with *Check for Updates…* disabled.
 
 ## Gatekeeper and notarization
 

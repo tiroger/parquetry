@@ -14,9 +14,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Bundle httpfs as a gzipped local DuckDB extension repository: raw extension
-  # Mach-O files can't be codesigned (DuckDB appends its own signature), and
-  # unsigned Mach-O files in the bundle fail notarization. See packaging/README.md.
+  # Don't bundle DuckDB extensions: they carry DuckDB's own signature, which
+  # notarization rejects even inside archives. DuckDB installs httpfs on first
+  # S3/HTTP use. See packaging/README.md.
   DUCKDB_EXT_LAYOUT: none
 
 jobs:
@@ -98,6 +98,17 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: scripts/notarize.sh
 
+      - name: Generate update feed (Sparkle appcast)
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::warning::SPARKLE_PRIVATE_KEY not set; publishing without appcast.xml (installed apps won't see this update)"
+            exit 0
+          fi
+          scripts/appcast.sh "target/dist/Parquetry-$VERSION.zip"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -108,6 +119,7 @@ jobs:
             "target/dist/Parquetry-$VERSION.dmg"
             "target/dist/SHA256SUMS"
           )
+          if [ -f target/dist/appcast.xml ]; then files+=("target/dist/appcast.xml"); fi
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else

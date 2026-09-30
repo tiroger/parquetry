@@ -8,6 +8,7 @@ gpui_kit::actions!(
     parquetry,
     [
         About,
+        CheckForUpdates,
         OpenSettings,
         Quit,
         NewWindow,
@@ -105,6 +106,7 @@ pub fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Parquetry").items([
             MenuItem::action("About Parquetry", About),
+            MenuItem::action("Check for Updates…", CheckForUpdates).disabled(!crate::updater::is_available()),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),

@@ -38,6 +38,18 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Sparkle: automatic updates. The feed and its archives are signed with the
+	     EdDSA key whose public half is below (packaging/sparkle_public_key.txt). -->
+	<key>SUFeedURL</key>
+	<string>@SPARKLE_FEED_URL@</string>
+	<key>SUPublicEDKey</key>
+	<string>@SPARKLE_PUBLIC_KEY@</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © @YEAR@ Parquetry contributors. MIT License.</string>
 

@@ -21,7 +21,13 @@
 #                        raw  Resources/duckdb_extensions/<platform>/<ext>.duckdb_extension
 #   DUCKDB_EXTENSIONS  space-separated extensions to bundle (default: httpfs)
 #   DUCKDB_VERSION     e.g. v1.5.5 (default: derived from libduckdb-sys in Cargo.lock)
-#   BUILD_NUMBER       CFBundleVersion (default: git commit count, else a UTC date stamp)
+#   BUILD_NUMBER       CFBundleVersion (default: git commit count, else a UTC date stamp).
+#                      Sparkle compares this number, so it must grow with every release.
+#   SKIP_SPARKLE=1     don't embed Sparkle (no automatic updates)
+#   SPARKLE_VERSION    Sparkle release to embed (default: 2.10.0)
+#   SPARKLE_FEED_URL   appcast URL baked into Info.plist
+#                      (default: https://github.com/tiroger/parquetry/releases/latest/download/appcast.xml)
+#   SPARKLE_PUBLIC_KEY EdDSA public key for update signatures (default: packaging/sparkle_public_key.txt)
 #   CARGO_TARGET_DIR   cargo target dir (default: <repo>/target); output goes to <it>/dist
 set -euo pipefail
 
@@ -37,6 +43,9 @@ SKIP_QUICKLOOK="${SKIP_QUICKLOOK:-0}"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 EXT_LAYOUT="${DUCKDB_EXT_LAYOUT:-none}"
 EXTENSIONS="${DUCKDB_EXTENSIONS:-httpfs}"
+SKIP_SPARKLE="${SKIP_SPARKLE:-0}"
+SPARKLE_VERSION="${SPARKLE_VERSION:-2.10.0}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/tiroger/parquetry/releases/latest/download/appcast.xml}"
 
 APP_NAME="Parquetry"
 BIN_NAME="parquetry"
@@ -49,6 +58,7 @@ QL_NAME="ParquetryQuickLook.appex"
 QL_APPEX="$TARGET_DIR/quicklook/$QL_NAME"
 QL_ENTITLEMENTS="$ROOT/quicklook/QuickLook.entitlements"
 EXT_CACHE="$TARGET_DIR/duckdb_extensions_cache"
+SPARKLE_CACHE="$TARGET_DIR/sparkle_cache"
 
 if [ -t 2 ]; then C_B=$'\033[1;34m' C_Y=$'\033[1;33m' C_R=$'\033[1;31m' C_0=$'\033[0m'; else C_B="" C_Y="" C_R="" C_0=""; fi
 log() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*" >&2; }
@@ -158,7 +168,9 @@ chmod 755 "$CONTENTS/MacOS/$BIN_NAME"
 ARCHS="$(lipo -archs "$CONTENTS/MacOS/$BIN_NAME")"
 log "Executable architectures: $ARCHS"
 
+SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-$(tr -d '[:space:]' <"$PACKAGING/sparkle_public_key.txt")}"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" -e "s/@YEAR@/$(date +%Y)/g" \
+	-e "s|@SPARKLE_FEED_URL@|$SPARKLE_FEED_URL|g" -e "s|@SPARKLE_PUBLIC_KEY@|$SPARKLE_PUBLIC_KEY|g" \
 	"$PACKAGING/Info.plist.template" >"$CONTENTS/Info.plist"
 plutil -lint -s "$CONTENTS/Info.plist" || die "rendered Info.plist is invalid"
 printf 'APPL????' >"$CONTENTS/PkgInfo"
@@ -261,6 +273,38 @@ if [ "$SKIP_QUICKLOOK" != "1" ]; then
 fi
 
 # --------------------------------------------------------------------------- #
+# Sparkle (automatic updates)
+# --------------------------------------------------------------------------- #
+# fetch_sparkle -> prints the directory holding the unpacked Sparkle release
+fetch_sparkle() {
+	local dir="$SPARKLE_CACHE/$SPARKLE_VERSION"
+	if [ ! -d "$dir/Sparkle.framework" ]; then
+		mkdir -p "$dir"
+		local archive="$SPARKLE_CACHE/Sparkle-$SPARKLE_VERSION.tar.xz"
+		if [ ! -f "$archive" ]; then
+			local url="https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+			log "Downloading $url"
+			curl -fsSL -o "$archive.part" "$url" || die "couldn't download Sparkle $SPARKLE_VERSION"
+			mv "$archive.part" "$archive"
+		fi
+		tar -xf "$archive" -C "$dir"
+	fi
+	echo "$dir"
+}
+
+if [ "$SKIP_SPARKLE" = "1" ]; then
+	log "SKIP_SPARKLE=1: building without automatic updates"
+else
+	SPARKLE_DIR="$(fetch_sparkle)"
+	mkdir -p "$CONTENTS/Frameworks"
+	ditto "$SPARKLE_DIR/Sparkle.framework" "$CONTENTS/Frameworks/Sparkle.framework"
+	# The XPC services are only needed by sandboxed apps; Parquetry isn't sandboxed.
+	rm -rf "$CONTENTS/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+		"$CONTENTS/Frameworks/Sparkle.framework/XPCServices"
+	log "Embedded Sparkle $SPARKLE_VERSION (feed: $SPARKLE_FEED_URL)"
+fi
+
+# --------------------------------------------------------------------------- #
 # Code signing (inside-out)
 # --------------------------------------------------------------------------- #
 SIGN=(codesign --force --sign "$IDENTITY")
@@ -279,6 +323,14 @@ if [ -d "$CONTENTS/PlugIns/$QL_NAME" ]; then
 		warn "$QL_ENTITLEMENTS not found; keeping the appex's existing entitlements"
 		"${SIGN[@]}" "${TS[@]}" --options runtime --preserve-metadata=entitlements "$CONTENTS/PlugIns/$QL_NAME"
 	fi
+fi
+
+if [ -d "$CONTENTS/Frameworks/Sparkle.framework" ]; then
+	# Sparkle's helpers first, then the framework (Sparkle's documented order).
+	SPARKLE_B="$CONTENTS/Frameworks/Sparkle.framework/Versions/B"
+	"${SIGN[@]}" "${TS[@]}" --options runtime "$SPARKLE_B/Autoupdate"
+	"${SIGN[@]}" "${TS[@]}" --options runtime "$SPARKLE_B/Updater.app"
+	"${SIGN[@]}" "${TS[@]}" --options runtime "$CONTENTS/Frameworks/Sparkle.framework"
 fi
 
 # DuckDB extensions are NOT re-signed: DuckDB verifies its own RSA signature over

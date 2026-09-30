@@ -51,6 +51,8 @@ pub struct SettingsForm {
     appearance: Entity<SelectState<Vec<SharedString>>>,
     font_size: f32,
     show_summaries: bool,
+    /// Sparkle's automatic-check preference; `None` in builds without updates.
+    auto_update: Option<bool>,
     profile: Entity<SelectState<Vec<SharedString>>>,
     profiles: Vec<String>,
     region: Entity<InputState>,
@@ -90,6 +92,7 @@ impl SettingsForm {
             }),
             font_size: settings.font_size,
             show_summaries: settings.show_summaries,
+            auto_update: crate::updater::automatically_checks(),
             profile: cx.new(|cx| {
                 SelectState::new(
                     profiles.iter().map(|p| SharedString::from(p.clone())).collect::<Vec<_>>(),
@@ -114,6 +117,10 @@ impl SettingsForm {
         settings.appearance = Appearance::all()[appearance_ix.min(2)];
         settings.font_size = self.font_size;
         settings.show_summaries = self.show_summaries;
+        if let Some(enabled) = self.auto_update {
+            // Stored by Sparkle itself, not in settings.json.
+            crate::updater::set_automatically_checks(enabled);
+        }
         let profile_ix = self.profile.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
         settings.engine.s3.profile = if profile_ix == 0 { None } else { self.profiles.get(profile_ix).cloned() };
         let text = |input: &Entity<InputState>| -> Option<String> {
@@ -210,7 +217,31 @@ impl Render for SettingsForm {
                                 cx.notify();
                             })),
                         cx,
-                    )),
+                    ))
+                    .children(self.auto_update.map(|enabled| {
+                        row(
+                            "Updates",
+                            h_flex()
+                                .gap_3()
+                                .child(
+                                    Switch::new("auto-update")
+                                        .label("Check for updates automatically")
+                                        .checked(enabled)
+                                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                            this.auto_update = Some(*on);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("check-now")
+                                        .label("Check Now")
+                                        .small()
+                                        .outline()
+                                        .on_click(|_, _, _| crate::updater::check_for_updates()),
+                                ),
+                            cx,
+                        )
+                    })),
             )
             .child(
                 section("Amazon S3", cx)

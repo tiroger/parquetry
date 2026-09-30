@@ -24,6 +24,9 @@ parquetry s3://bucket/path/             # S3 prefix or object
 parquetry https://example.com/x.parquet
 ```
 
+The app updates itself: it checks for new releases daily (*Parquetry ▸ Check for
+Updates…* checks now; Settings turns the daily check off).
+
 Maintainers: see [packaging/README.md](packaging/README.md) for signing,
 notarization, the Homebrew tap and the release workflow.
 
