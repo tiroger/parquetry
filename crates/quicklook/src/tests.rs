@@ -73,7 +73,9 @@ fn mixed_batch() -> RecordBatch {
 #[test]
 fn renders_mixed_types() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("mixed & <odd>.parquet");
+    // `<` and `>` aren't allowed in Windows file names.
+    let name = if cfg!(windows) { "mixed & 'odd'.parquet" } else { "mixed & <odd>.parquet" };
+    let path = dir.path().join(name);
     write_parquet(&path, &mixed_batch());
 
     let html = preview_html(&path, 200).unwrap();
@@ -85,7 +87,8 @@ fn renders_mixed_types() {
     assert!(!html.contains("http://") && !html.contains("https://"));
 
     // Header: escaped file name and summary.
-    assert!(html.contains("<h1>mixed &amp; &lt;odd&gt;.parquet</h1>"));
+    let heading = if cfg!(windows) { "<h1>mixed &amp; &#39;odd&#39;.parquet</h1>" } else { "<h1>mixed &amp; &lt;odd&gt;.parquet</h1>" };
+    assert!(html.contains(heading), "file name is escaped");
     assert!(html.contains("4 rows"));
     assert!(html.contains("6 columns"));
     assert!(html.contains("1 row group"));
