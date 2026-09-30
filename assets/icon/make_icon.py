@@ -13,9 +13,9 @@ Outputs (next to this file):
                     (skipped with --no-icns or when iconutil is unavailable)
 
 Design: a macOS Big Sur-style continuous-corner squircle (824 px body on a
-1024 px canvas) filled with a herringbone parquet floor in warm oak tones,
-with a translucent "table header" band and faint grid lines so it reads as a
-data viewer. Everything is rendered at 2x and downsampled for anti-aliasing.
+1024 px canvas) in deep navy, holding three table columns made of chevron
+parquet (warm oak planks with grain, seams and bevels), each under a cream
+column-header chip. Everything is rendered at 4x and downsampled.
 """
 
 from __future__ import annotations
@@ -44,155 +44,121 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 HERE = Path(__file__).resolve().parent
 
-SS = 2                      # supersampling factor
+SS = 4                      # supersampling factor
 SIZE = 1024 * SS            # working canvas
 BODY = 824 * SS             # squircle body (Apple's macOS icon grid)
 ORIGIN = (SIZE - BODY) // 2
 SQUIRCLE_N = 5.0            # superellipse exponent; ~continuous-corner look
 
-# Herringbone geometry (in 1x pixels): planks are RATIO times longer than wide.
-RATIO = 4
-# Chosen so one herringbone repeat (RATIO * sqrt(2) plank widths) equals one table
-# column: the chevron spines line up with the grid.
-PLANK_W = BODY / 3 / (RATIO * math.sqrt(2))
-PATTERN_SHIFT = float(os.environ.get("ICON_SHIFT", "20"))
-ROTATION = math.radians(45)
+# Columns, as fractions of the body.
+N_COLS = 3
+COL_W = 0.195
+COL_GAP = 0.058
+COL_TOP = 0.305
+COL_BOTTOM = 0.825
+CHIP_TOP = 0.165
+CHIP_BOTTOM = 0.238
+# Planks: thickness and seam as fractions of the column width.
+PLANK_T = 0.30
+SEAM_T = 0.034
 
-# Warm oak palette (sRGB): honey, amber, light oak, toasted.
+BG_TOP = (32, 44, 66)
+BG_BOTTOM = (12, 18, 30)
+# Warm oak palette (sRGB): light oak, honey, amber, toasted.
 OAK = np.array(
     [
-        (214, 164, 104),
-        (196, 138, 78),
-        (226, 183, 124),
-        (178, 118, 64),
+        (232, 190, 130),
+        (218, 168, 106),
+        (204, 150, 88),
+        (188, 130, 72),
     ],
     dtype=np.float32,
 )
-SEAM = np.array((88, 54, 28), dtype=np.float32)
+SEAM = np.array((72, 43, 22), dtype=np.float32)
+CHIP_TOP_COLOR = (250, 241, 224)
+CHIP_BOTTOM_COLOR = (234, 219, 194)
 
-HEADER_COLOR = (23, 44, 72)        # deep slate-blue band: contrasts with the wood
-HEADER_ALPHA = 0.90
-PILL_COLOR = (244, 232, 210)       # cream column-header chips
-GRID_COLOR = (255, 247, 232)
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def body_px(f: float) -> float:
+    return ORIGIN + BODY * f
+
+
+def column_boxes():
+    w = BODY * COL_W
+    g = BODY * COL_GAP
+    x = ORIGIN + (BODY - (N_COLS * w + (N_COLS - 1) * g)) / 2
+    for _ in range(N_COLS):
+        yield x, x + w
+        x += w + g
 
 
 # --------------------------------------------------------------------------- #
-# Herringbone lookup
+# Chevron parquet
 # --------------------------------------------------------------------------- #
-def brick_lookup(n: int, span: int):
-    """Assign every unit cell in [-span, span)^2 to a plank id.
+def render_column(x0: float, x1: float, y0: float, y1: float, rng) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Chevron planks filling x0..x1 x y0..y1. Returns (HxWx3 float RGB, box)."""
+    bx0, by0, bx1, by1 = int(math.floor(x0)), int(math.floor(y0)), int(math.ceil(x1)), int(math.ceil(y1))
+    yy, xx = np.mgrid[by0:by1, bx0:bx1].astype(np.float32)
+    xx += 0.5
+    yy += 0.5
+    w = x1 - x0
+    half = w / 2
+    xc = x0 + half
+    t = w * PLANK_T
+    pitch = t + w * SEAM_T
 
-    Axis-aligned herringbone with planks n x 1: horizontal plank H(k, m) covers
-    cells (k + i + m*n, k - m*n) for i < n; vertical plank V(k, m) covers
-    (k + m*n, k + 1 + j - m*n) for j < n. Translations (1, 1) and (n, -n)
-    tile the plane exactly; rotating by 45 degrees gives classic herringbone.
-    Returns (ids, orient) arrays indexed [x + span, y + span]; orient 0 = H, 1 = V.
-    """
-    size = 2 * span
-    ids = np.full((size, size), -1, dtype=np.int64)
-    orient = np.zeros((size, size), dtype=np.int8)
-    reach = 3 * span
-    next_id = 0
-    for m in range(-reach // n - 2, reach // n + 3):
-        for k in range(-reach, reach):
-            for o in (0, 1):
-                if o == 0:
-                    cells = [(k + i + m * n, k - m * n) for i in range(n)]
-                else:
-                    cells = [(k + m * n, k + 1 + j - m * n) for j in range(n)]
-                hit = False
-                for x, y in cells:
-                    ix, iy = x + span, y + span
-                    if 0 <= ix < size and 0 <= iy < size:
-                        ids[ix, iy] = next_id
-                        orient[ix, iy] = o
-                        hit = True
-                if hit:
-                    next_id += 1
-    assert (ids >= 0).all(), "herringbone lookup has holes"
-    return ids, orient
+    left = xx < xc
+    # Each plank's top edge runs down towards the centre line at 45 degrees
+    # (a V pointing down); measure vertically from it.
+    rise = np.where(left, xx - x0, x1 - xx)
+    v = yy - y0 - rise + pitch * 3   # keep it positive
+    k = np.floor(v / pitch).astype(np.int64)
+    f = v - k * pitch                # 0..pitch, plank body is 0..t
+    side = (~left).astype(np.int64)
 
+    n = int(k.max()) + 2
+    tone_idx = rng.integers(0, len(OAK), (n, 2))
+    for i in range(1, n):        # no identical tones stacked on the same side
+        for s in (0, 1):
+            if tone_idx[i, s] == tone_idx[i - 1, s]:
+                tone_idx[i, s] = (tone_idx[i, s] + 1) % len(OAK)
+    jitter = rng.normal(1.0, 0.03, (n, 2)).astype(np.float32)
+    phase = (rng.random((n, 2)) * 50).astype(np.float32)
+    density = rng.uniform(4.0, 7.0, (n, 2)).astype(np.float32)
 
-def value_noise(shape, scale, rng):
-    """Smooth-ish noise in [0, 1] by upsampling a small random grid."""
-    h, w = shape
-    gh, gw = max(2, int(h / scale) + 2), max(2, int(w / scale) + 2)
-    grid = rng.random((gh, gw)).astype(np.float32)
-    img = Image.fromarray((grid * 255).astype(np.uint8), "L").resize((w, h), Image.BICUBIC)
-    return np.asarray(img, dtype=np.float32) / 255.0
+    base = OAK[tone_idx[k, side]] * jitter[k, side][..., None]
+    # The left planks face the light a little more.
+    base *= np.where(left, 1.05, 0.91)[..., None]
 
+    # Grain runs along the plank (45 degrees): stripes over the across coordinate.
+    across = f / t
+    along = (xx - x0) / w
+    ph = phase[k, side]
+    dens = density[k, side]
+    warp = 0.10 * np.sin(along * 7.0 + ph) + 0.05 * np.sin(along * 17.0 + ph * 1.3)
+    g1 = np.sin(2 * math.pi * (across * dens + warp * dens + ph))
+    g2 = np.sin(2 * math.pi * (across * dens * 2.6 + warp * 2.0 + ph * 0.7))
+    grain = 0.6 * g1 + 0.3 * g2
+    grain = np.sign(grain) * np.abs(grain) ** 1.7
+    shade = 1.0 + 0.07 * grain
 
-def render_wood(rng) -> np.ndarray:
-    """Return an HxWx3 float32 array (0..255) of the parquet floor."""
-    yy, xx = np.mgrid[0:SIZE, 0:SIZE].astype(np.float32)
-    cx = cy = SIZE / 2
-    # Rotate into pattern space; pattern units are plank widths.
-    dx, dy = xx - cx - PATTERN_SHIFT * SS, yy - cy
-    c, s = math.cos(ROTATION), math.sin(ROTATION)
-    u = (dx * c + dy * s) / PLANK_W
-    v = (-dx * s + dy * c) / PLANK_W
+    # Bevel towards each plank's long edges and the centre seam; highlight on top edges.
+    d_edge = np.minimum(f, np.maximum(t - f, 0)) / t
+    d_mid = np.abs(xx - xc) / (w * 0.08)
+    bevel = np.clip(1 - np.minimum(d_edge / 0.14, d_mid), 0, 1) ** 2
+    shade *= 1 - 0.12 * bevel
+    lit = np.clip(1 - f / (t * 0.07), 0, 1)
+    rgb = base * shade[..., None] + 22 * lit[..., None]
 
-    span = int(math.ceil(SIZE * 0.75 / PLANK_W)) + 2 * RATIO
-    ids, orient = brick_lookup(RATIO, span)
-
-    iu = np.floor(u).astype(np.int64)
-    iv = np.floor(v).astype(np.int64)
-    fu = u - iu
-    fv = v - iv
-    ix, iy = iu + span, iv + span
-    pid = ids[ix, iy]
-    por = orient[ix, iy]
-
-    # Per-plank tone, brightness jitter and grain phase.
-    n_planks = int(ids.max()) + 1
-    tone_idx = rng.integers(0, len(OAK), n_planks)
-    # Avoid identical neighbours along the staircase for a livelier floor.
-    for i in range(1, n_planks):
-        if tone_idx[i] == tone_idx[i - 1]:
-            tone_idx[i] = (tone_idx[i] + 1 + rng.integers(0, len(OAK) - 1)) % len(OAK)
-    jitter = rng.normal(1.0, 0.035, n_planks).astype(np.float32)
-    phase = rng.random(n_planks).astype(np.float32) * 50.0
-    density = rng.uniform(5.0, 9.0, n_planks).astype(np.float32)
-
-    base = OAK[tone_idx[pid]] * jitter[pid][..., None]
-
-    # Along/across coordinates inside each plank (in plank widths).
-    along = np.where(por == 0, u, v)
-    across = np.where(por == 0, fv, fu)
-    ph = phase[pid]
-    dens = density[pid]
-    warp = 0.18 * np.sin(along * 0.9 + ph) + 0.08 * np.sin(along * 2.3 + ph * 1.7)
-    g1 = np.sin(2 * math.pi * (across * dens + warp * dens * 0.35 + ph))
-    g2 = np.sin(2 * math.pi * (across * dens * 2.7 + warp * 1.3 + ph * 0.5))
-    grain = 0.55 * g1 + 0.25 * g2
-    grain = np.sign(grain) * np.abs(grain) ** 1.6   # thin darker streaks
-    fine = value_noise((SIZE, SIZE), 3.0 * SS, rng) - 0.5
-    shade = 1.0 + 0.075 * grain + 0.035 * fine
-    wood = base * shade[..., None]
-
-    # Seams: darken near a boundary with a different plank.
-    def other(dx_, dy_):
-        jx = np.clip(ix + dx_, 0, ids.shape[0] - 1)
-        jy = np.clip(iy + dy_, 0, ids.shape[1] - 1)
-        return ids[jx, jy] != pid
-
-    seam_w = 0.048   # in plank widths (~2.3 px at 1x)
-    bevel_w = 0.16
-    d_left = np.where(other(-1, 0), fu, 9.0)
-    d_right = np.where(other(1, 0), 1.0 - fu, 9.0)
-    d_top = np.where(other(0, -1), fv, 9.0)
-    d_bot = np.where(other(0, 1), 1.0 - fv, 9.0)
-    dist = np.minimum(np.minimum(d_left, d_right), np.minimum(d_top, d_bot))
-
-    seam = np.clip((seam_w - dist) / (seam_w * 0.6) + 0.5, 0.0, 1.0)
-    # Soft bevel: planks darken slightly towards their edges, lighter centre.
-    bevel = np.clip(1.0 - dist / bevel_w, 0.0, 1.0) ** 2
-    wood = wood * (1.0 - 0.10 * bevel[..., None])
-    # Light from the top: edges facing up (in screen space) catch a highlight.
-    lit = np.clip(1.0 - np.minimum(d_top, d_left) / 0.09, 0.0, 1.0) * (1 - seam)
-    wood = wood + 18.0 * lit[..., None]
-    wood = wood * (1.0 - seam[..., None]) + SEAM * seam[..., None]
-    return np.clip(wood, 0, 255)
+    seam = np.clip((f - t) / (SS * 1.0), 0, 1)
+    rgb = rgb * (1 - seam[..., None]) + SEAM * seam[..., None]
+    centre = np.clip(1 - np.abs(xx - xc) / (SS * 1.6), 0, 1) * 0.85
+    rgb = rgb * (1 - centre[..., None]) + SEAM * centre[..., None]
+    return np.clip(rgb, 0, 255), (bx0, by0, bx1, by1)
 
 
 # --------------------------------------------------------------------------- #
@@ -202,109 +168,94 @@ def squircle_mask(size: int, body: int, origin: int) -> Image.Image:
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     r = body / 2
     cx = cy = origin + r
-    # Supersample edges 4x4 inside this already-2x canvas for a clean rim.
+    # Supersample edges 2x2 inside this already-4x canvas for a clean rim.
     acc = np.zeros((size, size), dtype=np.float32)
-    offs = [(i + 0.5) / 4 - 0.5 for i in range(4)]
+    offs = [(i + 0.5) / 2 - 0.5 for i in range(2)]
     for ox in offs:
         for oy in offs:
             nx = np.abs((xx + 0.5 + ox - cx) / r)
             ny = np.abs((yy + 0.5 + oy - cy) / r)
             acc += (nx**SQUIRCLE_N + ny**SQUIRCLE_N <= 1.0)
-    return Image.fromarray((acc / 16 * 255).astype(np.uint8), "L")
+    return Image.fromarray((acc / 4 * 255).astype(np.uint8), "L")
 
 
-def lerp(a, b, t):
-    return a + (b - a) * t
+def vertical_gradient(top, bottom) -> Image.Image:
+    t = np.clip((np.arange(SIZE, dtype=np.float32) - ORIGIN) / BODY, 0, 1)[:, None, None]
+    rgb = np.array(top, np.float32) * (1 - t) + np.array(bottom, np.float32) * t
+    rgb = np.broadcast_to(rgb, (SIZE, SIZE, 3))
+    alpha = np.full((SIZE, SIZE, 1), 255, np.float32)
+    return Image.fromarray(np.concatenate([rgb, alpha], -1).astype(np.uint8), "RGBA")
 
 
-def overlay_table(img: Image.Image, mask: Image.Image) -> Image.Image:
-    """Translucent header band, column chips, grid lines, one selected row."""
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(layer)
-    top = ORIGIN
-    left, right = ORIGIN, ORIGIN + BODY
-    header_h = int(BODY * 0.25)
-    cols = 3
-    col_w = BODY / cols
-    row_h = (BODY - header_h) / 5
+def rounded_mask(box, radius) -> Image.Image:
+    m = Image.new("L", (SIZE, SIZE), 0)
+    ImageDraw.Draw(m).rounded_rectangle(box, radius=radius, fill=255)
+    return m
 
-    # Grid lines over the wood (drawn first so the header covers their tops).
-    line_w = 5 * SS
-    for i in range(1, cols):
-        x = left + col_w * i
-        d.rectangle([x - line_w / 2, top, x + line_w / 2, top + BODY], fill=GRID_COLOR + (86,))
-    for j in range(1, 5):
-        y = top + header_h + row_h * j
-        d.rectangle([left, y - line_w / 2, right, y + line_w / 2], fill=GRID_COLOR + (86,))
 
-    # Selected row: a soft cream wash with a crisp outline.
-    sel_j = 1
-    y0 = top + header_h + row_h * sel_j
-    d.rectangle([left, y0, right, y0 + row_h], fill=(255, 244, 222, 70))
+def draw_columns(img: Image.Image, rng) -> Image.Image:
+    y0, y1 = body_px(COL_TOP), body_px(COL_BOTTOM)
+    chip0, chip1 = body_px(CHIP_TOP), body_px(CHIP_BOTTOM)
+    shadows = Image.new("L", img.size, 0)
+    sd = ImageDraw.Draw(shadows)
+    boxes = list(column_boxes())
+    for x0, x1 in boxes:
+        r = (x1 - x0) * 0.13
+        sd.rounded_rectangle([x0, y0 + 6 * SS, x1, y1 + 10 * SS], radius=r, fill=150)
+        sd.rounded_rectangle([x0, chip0 + 5 * SS, x1, chip1 + 7 * SS], radius=(chip1 - chip0) / 2, fill=110)
+    shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    shadow.putalpha(shadows.filter(ImageFilter.GaussianBlur(9 * SS)))
+    img = Image.alpha_composite(img, shadow)
 
-    # Header band.
-    for yy in range(int(top), int(top + header_h)):
-        t = (yy - top) / header_h
-        col = tuple(int(lerp(c * 1.28, c * 0.92, t)) for c in HEADER_COLOR)
-        d.line([(left, yy), (right, yy)], fill=col + (int(255 * HEADER_ALPHA),))
-    # Thin highlight under the header.
-    d.rectangle([left, top + header_h - 3 * SS, right, top + header_h + 3 * SS], fill=(255, 225, 170, 190))
+    for x0, x1 in boxes:
+        rgb, (bx0, by0, bx1, by1) = render_column(x0, x1, y0, y1, rng)
+        # Inner shadow at the top so the planks sit slightly below the surface.
+        h = rgb.shape[0]
+        depth = np.clip(1 - np.arange(h, dtype=np.float32) / (18 * SS), 0, 1)[:, None, None] ** 2
+        rgb = rgb * (1 - 0.28 * depth)
+        tile = Image.fromarray(rgb.astype(np.uint8), "RGB").convert("RGBA")
+        full = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        full.paste(tile, (bx0, by0))
+        img.paste(full, (0, 0), rounded_mask([x0, y0, x1, y1], (x1 - x0) * 0.13))
 
-    # Column-header chips.
-    chip_h = int(header_h * 0.20)
-    cy = top + header_h * 0.58
-    widths = [0.52, 0.62, 0.44]
-    for i in range(cols):
-        cx0 = left + col_w * i + col_w * 0.17
-        w = col_w * widths[i]
-        d.rounded_rectangle(
-            [cx0, cy - chip_h / 2, cx0 + w, cy + chip_h / 2],
-            radius=chip_h / 2,
-            fill=PILL_COLOR + (240,),
-        )
-    for i in range(1, cols):
-        x = left + col_w * i
-        d.rectangle([x - 2 * SS, top + header_h * 0.30, x + 2 * SS, top + header_h * 0.86], fill=(255, 255, 255, 60))
-
-    out = Image.alpha_composite(img, layer)
-    return out
+        # Header chip with a soft vertical gradient.
+        chip = vertical_gradient(CHIP_TOP_COLOR, CHIP_BOTTOM_COLOR)
+        img.paste(chip, (0, 0), rounded_mask([x0, chip0, x1, chip1], (chip1 - chip0) / 2))
+    return img
 
 
 def lighting(img: Image.Image) -> Image.Image:
-    """Top sheen + bottom falloff + gentle vignette."""
+    """Top sheen + gentle vignette."""
     yy, xx = np.mgrid[0:SIZE, 0:SIZE].astype(np.float32)
     t = np.clip((yy - ORIGIN) / BODY, 0, 1)
     arr = np.asarray(img, dtype=np.float32)
     rgb = arr[..., :3]
-    grad = lerp(1.06, 0.90, t**1.2)
+    grad = lerp(1.05, 0.95, t)
     r = np.hypot(xx - SIZE / 2, yy - SIZE / 2) / (BODY / 2)
-    vig = 1.0 - 0.10 * np.clip(r - 0.55, 0, 1) ** 1.5
+    vig = 1.0 - 0.10 * np.clip(r - 0.6, 0, 1) ** 1.5
     rgb = rgb * (grad * vig)[..., None]
     arr = np.concatenate([np.clip(rgb, 0, 255), arr[..., 3:]], axis=-1)
     return Image.fromarray(arr.astype(np.uint8), "RGBA")
 
 
 def rim(mask: Image.Image) -> Image.Image:
-    """Subtle inner stroke: light at the top, darker at the bottom."""
-    inner = mask.filter(ImageFilter.MinFilter(2 * 3 * SS + 1))
+    """Subtle inner stroke: light at the top, fading towards the bottom."""
+    inner = mask.filter(ImageFilter.MinFilter(2 * 2 * SS + 1))
     ring = ImageChops.subtract(mask, inner)
     yy = np.mgrid[0:SIZE, 0:SIZE][0].astype(np.float32)
     t = np.clip((yy - ORIGIN) / BODY, 0, 1)
     alpha = np.asarray(ring, dtype=np.float32) / 255.0
     col = np.zeros((SIZE, SIZE, 4), dtype=np.float32)
-    top_col = np.array([255, 240, 215], np.float32)
-    bot_col = np.array([60, 36, 18], np.float32)
-    col[..., :3] = top_col * (1 - t[..., None]) + bot_col * t[..., None]
-    col[..., 3] = alpha * lerp(110, 150, t)
+    col[..., :3] = 255
+    col[..., 3] = alpha * lerp(80, 20, t)
     return Image.fromarray(col.astype(np.uint8), "RGBA")
 
 
 def render(seed: int) -> Image.Image:
     rng = np.random.default_rng(seed)
-    wood = render_wood(rng)
-    img = Image.fromarray(wood.astype(np.uint8), "RGB").convert("RGBA")
     mask = squircle_mask(SIZE, BODY, ORIGIN)
-    img = overlay_table(img, mask)
+    img = vertical_gradient(BG_TOP, BG_BOTTOM)
+    img = draw_columns(img, rng)
     img = lighting(img)
     img = Image.alpha_composite(img, rim(mask))
     img.putalpha(mask)
@@ -344,7 +295,7 @@ def build_icns(master: Image.Image, out: Path) -> None:
             name = f"icon_{pt}x{pt}{'@2x' if scale == 2 else ''}.png"
             im = master if px == 1024 else master.resize((px, px), Image.LANCZOS)
             if px <= 64:
-                # A touch of sharpening keeps seams crisp at tiny sizes.
+                # A touch of sharpening keeps the columns crisp at tiny sizes.
                 im = im.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=0))
             im.save(iconset / name)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out)], check=True)
