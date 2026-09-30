@@ -121,6 +121,11 @@ submissions print the notary log.
 ## CI release
 
 Push a tag matching the workspace version: `git tag v0.1.0 && git push origin v0.1.0`.
+The workflow only runs on tags once the repository variable
+`AUTOMATED_RELEASES` is `true` (set it after adding the secrets above:
+`gh variable set AUTOMATED_RELEASES --body true`); it can always be started by
+hand from the Actions tab. Without it, publish a locally built release:
+`gh release create v0.1.0 target/dist/Parquetry-0.1.0.{zip,dmg} target/dist/SHA256SUMS target/dist/appcast.xml`.
 `release.yml` checks the tag against `Cargo.toml`, imports the certificate into a
 temporary keychain, runs `UNIVERSAL=1 scripts/bundle.sh`, `package.sh` and
 `notarize.sh` and `appcast.sh`, uploads the zip, dmg, `SHA256SUMS` and

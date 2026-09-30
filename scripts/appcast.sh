@@ -46,6 +46,8 @@ else
 fi
 [ -f "$KEY_FILE" ] || die "no signing key: set SPARKLE_PRIVATE_KEY or SPARKLE_ED_KEY_FILE"
 
+# generate_appcast merges into an existing feed; start fresh so it lists only this zip.
+rm -f "$DIST/appcast.xml"
 "$SPARKLE_BIN/generate_appcast" \
 	--ed-key-file "$KEY_FILE" \
 	--download-url-prefix "$PREFIX" \

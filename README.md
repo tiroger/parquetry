@@ -1,12 +1,10 @@
 # Parquetry
 
-A fast macOS viewer for Parquet — and CSV, JSON, Arrow/Feather, Excel, Delta Lake
-and Iceberg — on disk or in S3. Every column header shows its distribution
-(histogram or top values), null share and range, in the spirit of marimo's table
-preview. Files of any size open instantly: only the rows on screen are read.
+A fast macOS viewer for Parquet, CSV, JSON, Arrow, Excel, Delta Lake and Iceberg,
+local or on S3. Every column header shows its distribution, nulls and range, like
+marimo's table preview. Files of any size open instantly.
 
-Built in Rust with [GPUI](https://gpui-kit.com) (Zed's GPU UI framework) and
-[DuckDB](https://duckdb.org).
+Built in Rust with [GPUI](https://gpui-kit.com) and [DuckDB](https://duckdb.org).
 
 ## Install
 
@@ -14,101 +12,61 @@ Built in Rust with [GPUI](https://gpui-kit.com) (Zed's GPU UI framework) and
 brew install --cask tiroger/tap/parquetry
 ```
 
-This installs `Parquetry.app` and a `parquetry` command:
+Or download the dmg from [Releases](https://github.com/tiroger/parquetry/releases/latest).
+Requires macOS 13+ on Apple Silicon. The app updates itself.
 
 ```sh
-parquetry data.parquet                  # a file
-parquetry exports/                      # a folder (Hive partitions become columns)
-parquetry 'logs/2024-*/*.parquet'       # a glob
-parquetry s3://bucket/path/             # S3 prefix or object
-parquetry https://example.com/x.parquet
+parquetry data.parquet              # file
+parquetry exports/                  # folder (Hive partitions become columns)
+parquetry 'logs/2024-*/*.parquet'   # glob
+parquetry s3://bucket/path/         # S3
 ```
-
-The app updates itself: it checks for new releases daily (*Parquetry ▸ Check for
-Updates…* checks now; Settings turns the daily check off).
-
-Maintainers: see [packaging/README.md](packaging/README.md) for signing,
-notarization, the Homebrew tap and the release workflow.
 
 ## Features
 
-- **Instant opening, smooth scrolling at any size.** The grid is a single
-  GPU-painted element that shapes only visible cells. Rows are fetched in blocks
-  around the viewport on background threads; nothing on the UI thread waits for
-  I/O. Positions are tracked in rows (not pixels), so a 600-million-row file
-  scrolls as precisely as a small one.
-- **Column summaries in the header**: type, null share, histogram (numbers and
-  dates) or top values (categories), min/max, distinct count. Hover a chart for
-  details and the value of the bar under the pointer. Local datasets are summarized
-  exactly up to 100M rows; larger and remote ones use an even sample (marked with a
-  dot), and footer statistics keep null counts and min/max exact. *View ▸ Compute
-  Exact Summaries* scans everything.
-- **Sort, filter, search.** Click a header for sort (including secondary sort),
-  filters, pin/hide/fit. Right-click cells to filter by a value or copy as TSV, CSV,
-  JSON, Markdown or a SQL `IN` list. Free-text search across every column, typed
-  filters with friendly validation, and free-form SQL `WHERE` clauses.
-- **Columns tab**: every column with its chart, nulls, distinct, min, max, mean.
-- **Metadata tab**: file facts plus Parquet internals — per-column storage
-  (compressed/uncompressed size, codec, encodings, share of the file), row groups,
-  column chunks with statistics, the Parquet schema, key/value metadata.
-- **SQL tab and SQL console**: DuckDB SQL with highlighting and history. The file is
-  `t`; every open dataset is available by name. Results can be opened as a tab to
-  filter, summarize and export them.
-- **Inspector**: the full value of the selected cell (nested values pretty-printed
-  as JSON) and a detailed column summary.
-- **Export** the current view (filters and order applied) to Parquet, CSV, TSV,
-  JSON Lines or JSON, all columns or the visible ones.
-- **Compare** two datasets: schema changes, rows only on one side, and changed
-  values per column when matched on key columns.
-- **S3**: browse buckets and prefixes, AWS profiles and SSO, per-bucket regions
-  detected automatically, anonymous access for public data, custom endpoints
-  (MinIO, R2).
+- **Any size, no lag.** Only visible rows are read, on background threads. A
+  600M-row file scrolls like a small one.
+- **Column summaries** in every header: histogram or top values, nulls, min/max,
+  distinct count. Exact up to 100M rows, sampled beyond.
+- **Sort, filter, search**: typed filters or SQL `WHERE`; copy cells as
+  TSV/CSV/JSON/Markdown.
+- **Columns, Metadata and SQL tabs**: per-column stats, Parquet internals (row
+  groups, encodings, compression), and DuckDB SQL across open files.
+- **Export** the current view to Parquet, CSV, TSV or JSON.
+- **Compare** two datasets: schema, missing rows, changed values.
+- **S3**: bucket browser, AWS profiles and SSO, MinIO/R2 endpoints.
 - **Quick Look**: press Space on a `.parquet` file in Finder.
-- Tabs, drag and drop, recents, light/dark/system appearance, interface zoom,
-  keyboard navigation throughout (⌘/ lists the shortcuts).
 
-## Performance (M5 Max, 19 GB / 600M-row Parquet file)
+## Performance
+
+19 GB, 600M-row Parquet file on an M5 Max:
 
 | | |
 |---|---|
-| Open and show first rows | < 1 s |
-| Jump to the last row | < 1 s |
-| Sort all 600M rows by a column | 10–14 s (UI stays responsive, cancellable) |
-| Jump to row 300,000,000 of the sorted view | ~0.5 s |
-| Filter 50M rows (`amount > 9990`) | 49 ms |
-| Search every column of 50M rows | 1.9 s |
+| Open | < 1 s |
+| Jump to last row | < 1 s |
+| Sort all rows | 10–14 s (cancellable; UI stays responsive) |
+| Jump deep into sorted view | ~0.5 s |
+| Filter 50M rows | 49 ms |
 
 ## Development
 
 ```sh
-curl https://sh.rustup.rs -sSf | sh     # Rust
-cargo run -- path/to/file.parquet       # debug build
-cargo test --workspace                  # engine, grid, app UI tests, Quick Look
+cargo run -- path/to/file.parquet
+cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-scripts/bundle.sh                       # release .app in target/dist
+scripts/bundle.sh                   # release .app in target/dist
 ```
-
-GPUI compiles its Metal shaders at runtime (`runtime_shaders`), so only the Xcode
-Command Line Tools are required. Network tests against public S3 data:
-`cargo test -p parquetry-engine --test s3_public -- --ignored`.
-
-### Layout
 
 | Crate | |
 |---|---|
-| `crates/engine` | DuckDB-backed data engine, no UI: sources and format detection, views (filter/sort/search) with fast random row access, column statistics, Parquet metadata, SQL, export, comparison, S3. Worker threads in three priority lanes; every request is a cancellable `Job`. |
-| `crates/grid` | The GPU data grid: geometry, block cache, selection, painting, header charts, keyboard. |
-| `crates/app` | The application: workspace and tabs, documents, SQL, dialogs, settings, menus. |
-| `crates/quicklook` + `quicklook/` | Quick Look preview (Rust library + Swift extension). |
+| `crates/engine` | DuckDB data engine: sources, views, stats, SQL, export, S3. No UI. |
+| `crates/grid` | GPU data grid and header charts. |
+| `crates/app` | The application. |
+| `crates/quicklook` | Quick Look preview. |
 
-### How large files stay fast
+Releases, signing and the Homebrew tap: [packaging/README.md](packaging/README.md).
 
-- *Unsorted*: `LIMIT/OFFSET` on the Parquet scan; DuckDB skips row groups from
-  footer counts, so any page costs tens of milliseconds.
-- *Filtered/sorted*: the matching rows' positions (file, row number) are written
-  once, in order, to a narrow index table — reading only the filter and sort
-  columns. A page then reads exactly those rows with `file_row_number IN (…)`
-  filters pushed into the scan. Small results are copied into memory in the
-  background so scrolling them is instant; scattered (sorted) views fetch in
-  smaller blocks.
-- *Statistics* read one local copy of an even sample for large or remote data.
+## License
+
+MIT

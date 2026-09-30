@@ -22,6 +22,9 @@ env:
 jobs:
   release:
     name: Build, sign, notarize, publish
+    # Opt-in: set the repository variable AUTOMATED_RELEASES=true once the
+    # signing secrets exist. Until then releases are published by hand.
+    if: vars.AUTOMATED_RELEASES == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
