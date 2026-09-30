@@ -45,6 +45,9 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The first MSVC build takes ~55 min; keep it even if a test fails.
+          cache-on-failure: true
 
       - name: cargo test
         run: cargo test --workspace --locked --no-fail-fast
