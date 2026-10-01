@@ -147,7 +147,9 @@ jobs:
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
-            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" --generate-notes --verify-tag
+            notes=(--generate-notes)
+            if [ -f "packaging/release-notes/$TAG.md" ]; then notes=(--notes-file "packaging/release-notes/$TAG.md"); fi
+            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" "${notes[@]}" --verify-tag
           fi
 
       - name: Update Homebrew tap
@@ -264,7 +266,9 @@ jobs:
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
-            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" --generate-notes --verify-tag
+            notes=(--generate-notes)
+            if [ -f "packaging/release-notes/$TAG.md" ]; then notes=(--notes-file "packaging/release-notes/$TAG.md"); fi
+            gh release create "$TAG" "${files[@]}" --title "Parquetry $VERSION" "${notes[@]}" --verify-tag
           fi
 
       - name: Update Scoop bucket
