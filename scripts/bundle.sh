@@ -276,18 +276,32 @@ fi
 # Sparkle (automatic updates)
 # --------------------------------------------------------------------------- #
 # fetch_sparkle -> prints the directory holding the unpacked Sparkle release
+# The cache lives under target/, which CI build caches prune, so check every file
+# we rely on and unpack (or download) again when any is missing.
+sparkle_complete() {
+	local dir="$1" f
+	for f in Sparkle.framework/Versions/B/Sparkle Sparkle.framework/Versions/B/Autoupdate \
+		Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater bin/generate_appcast bin/generate_keys; do
+		[ -e "$dir/$f" ] || return 1
+	done
+}
+
 fetch_sparkle() {
 	local dir="$SPARKLE_CACHE/$SPARKLE_VERSION"
-	if [ ! -d "$dir/Sparkle.framework" ]; then
+	local archive="$SPARKLE_CACHE/Sparkle-$SPARKLE_VERSION.tar.xz"
+	local url="https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+	if ! sparkle_complete "$dir"; then
+		rm -rf "$dir"
 		mkdir -p "$dir"
-		local archive="$SPARKLE_CACHE/Sparkle-$SPARKLE_VERSION.tar.xz"
-		if [ ! -f "$archive" ]; then
-			local url="https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+		if [ ! -f "$archive" ] || ! tar -xf "$archive" -C "$dir" 2>/dev/null; then
 			log "Downloading $url"
+			mkdir -p "$SPARKLE_CACHE"
 			curl -fsSL -o "$archive.part" "$url" || die "couldn't download Sparkle $SPARKLE_VERSION"
 			mv "$archive.part" "$archive"
+			rm -rf "$dir" && mkdir -p "$dir"
+			tar -xf "$archive" -C "$dir" || die "couldn't unpack $archive"
 		fi
-		tar -xf "$archive" -C "$dir"
+		sparkle_complete "$dir" || die "Sparkle $SPARKLE_VERSION is missing files after unpacking"
 	fi
 	echo "$dir"
 }
