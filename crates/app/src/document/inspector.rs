@@ -9,7 +9,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
 use parquetry_engine::{ChartKind, ColumnInfo, ColumnSummary, format_number};
-use parquetry_grid::chart::{ChartColors, axis_label, chart_placeholder, paint_chart, thousands, top_value_bars};
+use parquetry_grid::chart::{axis_label, chart_colors, chart_placeholder, kind_color, null_color, paint_chart, thousands, top_value_bars};
 use parquetry_grid::{GridState, SummaryState};
 
 enum Value {
@@ -190,13 +190,8 @@ impl Inspector {
         let mut bars: Vec<AnyElement> = Vec::new();
         if let Some(s) = &summary {
             facts.extend(stat_rows(s));
-            let colors = ChartColors {
-                bar: theme.chart_1.opacity(0.85),
-                bar_hover: theme.chart_1,
-                other: theme.muted_foreground.opacity(0.35),
-                null: theme.warning.opacity(0.6),
-                baseline: theme.border,
-            };
+            let colors = chart_colors(info.kind, &theme);
+            let kind = kind_color(info.kind, &theme);
             match s.preferred_chart() {
                 ChartKind::Histogram => {
                     let chart_summary = s.clone();
@@ -232,8 +227,8 @@ impl Inspector {
                     for (ix, bar) in top_value_bars(s).into_iter().enumerate() {
                         let fraction = bar.count as f32 / max.max(bar.count) as f32;
                         let color = match bar.kind {
-                            parquetry_grid::chart::BarKind::Value => theme.chart_1.opacity(0.8),
-                            parquetry_grid::chart::BarKind::Null => theme.warning.opacity(0.6),
+                            parquetry_grid::chart::BarKind::Value => kind.opacity(0.8),
+                            parquetry_grid::chart::BarKind::Null => null_color(&theme).opacity(0.7),
                             parquetry_grid::chart::BarKind::Other => theme.muted_foreground.opacity(0.3),
                         };
                         bars.push(

@@ -42,6 +42,8 @@ gpui_kit::actions!(
         UseLightAppearance,
         UseDarkAppearance,
         UseSystemAppearance,
+        UseNavyOakTheme,
+        UseSlateTheme,
         RunQuery,
         ShowHelp,
         ShowShortcuts,
@@ -224,6 +226,9 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action("Match System", UseSystemAppearance),
                 MenuItem::action("Light", UseLightAppearance),
                 MenuItem::action("Dark", UseDarkAppearance),
+                MenuItem::separator(),
+                MenuItem::action("Navy & Oak (dark)", UseNavyOakTheme),
+                MenuItem::action("Slate (dark)", UseSlateTheme),
             ])),
         ]),
         Menu::new("Window").items([

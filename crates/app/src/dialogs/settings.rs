@@ -10,7 +10,7 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
 
 use crate::app_state::AppState;
-use crate::settings::{Appearance, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
+use crate::settings::{Appearance, DarkTheme, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
 
 /// Profile names from `~/.aws/config` and `~/.aws/credentials`.
 pub fn aws_profiles() -> Vec<String> {
@@ -49,6 +49,7 @@ fn parse_profiles(text: &str, prefixed: bool) -> Vec<String> {
 
 pub struct SettingsForm {
     appearance: Entity<SelectState<Vec<SharedString>>>,
+    dark_theme: Entity<SelectState<Vec<SharedString>>>,
     font_size: f32,
     show_summaries: bool,
     reopen_last_session: bool,
@@ -68,6 +69,7 @@ pub struct SettingsForm {
 impl SettingsForm {
     fn new(settings: &Settings, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let appearance_ix = Appearance::all().iter().position(|a| *a == settings.appearance).unwrap_or(0);
+        let dark_ix = DarkTheme::all().iter().position(|t| *t == settings.dark_theme).unwrap_or(0);
         let mut profiles = vec!["Default credential chain".to_string()];
         profiles.extend(aws_profiles());
         let profile_ix = settings
@@ -87,6 +89,14 @@ impl SettingsForm {
                 SelectState::new(
                     Appearance::all().iter().map(|a| SharedString::from(a.label())).collect::<Vec<_>>(),
                     Some(IndexPath::new(appearance_ix)),
+                    window,
+                    cx,
+                )
+            }),
+            dark_theme: cx.new(|cx| {
+                SelectState::new(
+                    DarkTheme::all().iter().map(|t| SharedString::from(t.label())).collect::<Vec<_>>(),
+                    Some(IndexPath::new(dark_ix)),
                     window,
                     cx,
                 )
@@ -117,6 +127,8 @@ impl SettingsForm {
     fn apply(&self, settings: &mut Settings, cx: &App) -> Result<(), String> {
         let appearance_ix = self.appearance.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
         settings.appearance = Appearance::all()[appearance_ix.min(2)];
+        let dark_ix = self.dark_theme.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
+        settings.dark_theme = DarkTheme::all()[dark_ix.min(DarkTheme::all().len() - 1)];
         settings.font_size = self.font_size;
         settings.show_summaries = self.show_summaries;
         settings.reopen_last_session = self.reopen_last_session;
@@ -191,6 +203,7 @@ impl Render for SettingsForm {
             .child(
                 section("Appearance", cx)
                     .child(row("Theme", Select::new(&self.appearance).small(), cx))
+                    .child(row("Dark palette", Select::new(&self.dark_theme).small(), cx))
                     .child(row(
                         "Interface size",
                         h_flex()

@@ -13,6 +13,55 @@ pub struct ChartColors {
     pub baseline: Hsla,
 }
 
+/// The colour of a kind of data: numbers, text, dates and times, booleans; muted
+/// for the rest. Theme charts 1–3 and 5 (4 is nulls).
+pub fn kind_color(kind: ColumnKind, theme: &gpui_kit::component::Theme) -> Hsla {
+    match kind {
+        ColumnKind::Integer | ColumnKind::Float | ColumnKind::Decimal => theme.chart_1,
+        ColumnKind::String | ColumnKind::Uuid => theme.chart_2,
+        ColumnKind::Date | ColumnKind::Timestamp | ColumnKind::Time | ColumnKind::Interval => theme.chart_3,
+        ColumnKind::Boolean => theme.chart_5,
+        ColumnKind::Binary | ColumnKind::List | ColumnKind::Struct | ColumnKind::Map | ColumnKind::Other => {
+            theme.muted_foreground
+        }
+    }
+}
+
+/// The colour for nulls (bars, the null-share line and labels).
+pub fn null_color(theme: &gpui_kit::component::Theme) -> Hsla {
+    theme.chart_4
+}
+
+/// A short badge for a kind of data, shown before column names.
+pub fn kind_badge(kind: ColumnKind) -> &'static str {
+    match kind {
+        ColumnKind::Integer | ColumnKind::Float | ColumnKind::Decimal => "#",
+        ColumnKind::String => "Aa",
+        ColumnKind::Uuid => "id",
+        ColumnKind::Date => "Dt",
+        ColumnKind::Timestamp => "Ts",
+        ColumnKind::Time => "Tm",
+        ColumnKind::Interval => "Δt",
+        ColumnKind::Boolean => "TF",
+        ColumnKind::Binary => "01",
+        ColumnKind::List => "[]",
+        ColumnKind::Struct | ColumnKind::Map => "{}",
+        ColumnKind::Other => "?",
+    }
+}
+
+/// Chart colours for a column of `kind`.
+pub fn chart_colors(kind: ColumnKind, theme: &gpui_kit::component::Theme) -> ChartColors {
+    let color = kind_color(kind, theme);
+    ChartColors {
+        bar: color.opacity(0.85),
+        bar_hover: color,
+        other: theme.muted_foreground.opacity(0.35),
+        null: null_color(theme).opacity(0.7),
+        baseline: theme.border,
+    }
+}
+
 /// Paint the chart for `summary` into `bounds`. `hovered` is the bar under the pointer.
 pub fn paint_chart(
     summary: &ColumnSummary,

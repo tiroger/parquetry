@@ -21,9 +21,9 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::Selectable as _;
 use gpui_kit::*;
 use parquetry_engine::{
-    Canceller, ColumnKind, CopyFormat, Dataset, Filter, FilterOp, SortKey, StatsMode, View, ViewSpec,
+    Canceller, ColumnKind, CopyFormat, Dataset, Filter, FilterOp, SelectionStats, SortKey, StatsMode, View, ViewSpec,
 };
-use parquetry_grid::{Grid, GridEvent, GridState, Hit, SummaryState};
+use parquetry_grid::{Grid, GridEvent, GridState, Hit, Selection, SummaryState};
 
 use crate::actions::*;
 use crate::app_state::AppState;
@@ -119,6 +119,10 @@ pub struct DatasetDocument {
     header_menu: Option<HeaderMenu>,
     /// Row to scroll to once the view being built is shown (session restore).
     pending_top: Option<u64>,
+    /// Totals of the current multi-cell selection, for the status bar; `None`
+    /// inside means too costly to compute.
+    selection_stats: Option<(Selection, Option<SelectionStats>)>,
+    stats_task: Option<Task<()>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -170,6 +174,8 @@ impl DatasetDocument {
             error: None,
             header_menu: None,
             pending_top: None,
+            selection_stats: None,
+            stats_task: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -348,6 +354,34 @@ impl DatasetDocument {
         self.apply_spec(spec, window, cx);
     }
 
+    /// Total the selected cells in the background (after a short pause, so dragging
+    /// a selection doesn't run a query per step). Replacing the task cancels the last.
+    fn refresh_selection_stats(&mut self, cx: &mut Context<Self>) {
+        let grid = self.grid.read(cx);
+        let selection = grid.selection().filter(|s| !s.is_single_cell());
+        let (Some(selection), Some(view)) = (selection, grid.view().cloned()) else {
+            self.selection_stats = None;
+            self.stats_task = None;
+            return;
+        };
+        if self.selection_stats.as_ref().is_some_and(|(s, _)| *s == selection) {
+            return;
+        }
+        let rows = selection.rows(grid.row_count());
+        let display = grid.display_columns();
+        let columns: Vec<usize> = selection.columns(display.len()).filter_map(|d| display.get(d).copied()).collect();
+        self.stats_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(150)).await;
+            let stats = view.selection_stats(rows, columns).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(stats) = stats {
+                    this.selection_stats = Some((selection, stats));
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     /// Replace the column's value filters (=, ≠, one of, not one of, null checks)
     /// with `filters`, from the value counts panel.
     pub fn replace_value_filters(&mut self, column: &str, filters: Vec<Filter>, window: &mut Window, cx: &mut Context<Self>) {
@@ -481,6 +515,7 @@ impl DatasetDocument {
                 cx.notify();
             }
             GridEvent::SelectionChanged => {
+                self.refresh_selection_stats(cx);
                 if self.inspector_open {
                     self.inspector.update(cx, |i, cx| i.refresh(cx));
                 }
@@ -809,42 +844,52 @@ impl DatasetDocument {
                 facts.push(label);
             }
         }
-        let location = ds
-            .source()
-            .map(|s| format::display_path(&s.location))
-            .unwrap_or_else(|| self.title.to_string());
+        // File name large, its folder as a quiet line, the facts as small pills.
+        let location = ds.source().map(|s| format::display_path(&s.location));
+        let (folder, name) = match ds.source() {
+            Some(source) => format::split_location(&source.location),
+            None => (String::new(), self.title.to_string()),
+        };
+        let tooltip = location.unwrap_or_else(|| self.title.to_string());
+        let pill = |text: String| {
+            div()
+                .px_1p5()
+                .rounded_full()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.secondary)
+                .text_color(theme.muted_foreground)
+                .whitespace_nowrap()
+                .child(text)
+        };
         h_flex()
-            .h(rems(3.))
             .px_3()
+            .py_2()
             .gap_3()
             .flex_shrink_0()
-            .border_b_1()
-            .border_color(theme.border)
             .bg(theme.background)
             .child(
                 Icon::new(if ds.is_remote() { Lucide::Cloud } else { Lucide::Sheet })
-                    .text_color(theme.muted_foreground),
+                    .text_color(theme.primary),
             )
             .child(
                 v_flex()
                     .min_w_0()
                     .flex_1()
+                    .gap_0p5()
                     .child(
-                        div()
+                        h_flex()
                             .id("doc-location")
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(location.clone())
-                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(location.clone()).build(window, cx)),
+                            .min_w_0()
+                            .gap_2()
+                            .items_baseline()
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).truncate().child(name))
+                            .when(!folder.is_empty(), |this| {
+                                this.child(div().min_w_0().text_xs().text_color(theme.muted_foreground).truncate().child(folder))
+                            })
+                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(facts.join("  ·  ")),
-                    ),
+                    .child(h_flex().gap_1().text_xs().overflow_x_hidden().children(facts.into_iter().map(pill))),
             )
             .child(
                 div().w(rems(18.)).child(
@@ -906,25 +951,28 @@ impl DatasetDocument {
             .into_element()
     }
 
-    fn render_filter_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The active search, filters, WHERE clause and sort, as removable chips.
+    fn filter_chips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let spec = self.spec.clone();
-        if !spec.has_filter() {
-            return None;
-        }
-        let theme = cx.theme().clone();
         let mut chips: Vec<AnyElement> = Vec::new();
-        let chip = |id: SharedString, text: String, on_remove: RemoveChip, cx: &mut Context<Self>| {
+        let chip = |id: SharedString, text: String, accent: bool, on_remove: RemoveChip, cx: &mut Context<Self>| {
             let theme = cx.theme();
+            let (bg, fg, border) = if accent {
+                (theme.primary.opacity(0.13), theme.foreground, theme.primary.opacity(0.4))
+            } else {
+                (theme.secondary, theme.foreground, theme.border)
+            };
             h_flex()
                 .id(id.clone())
-                .gap_1()
+                .gap_0p5()
                 .pl_2()
-                .pr_1()
+                .pr_0p5()
                 .h(rems(1.5))
-                .rounded(theme.radius)
-                .bg(theme.secondary)
+                .rounded_full()
+                .bg(bg)
+                .text_color(fg)
                 .border_1()
-                .border_color(theme.border)
+                .border_color(border)
                 .text_xs()
                 .child(div().max_w(rems(24.)).truncate().child(text))
                 .child(
@@ -940,6 +988,7 @@ impl DatasetDocument {
             chips.push(chip(
                 "chip-search".into(),
                 format!("contains “{}”", spec.search),
+                true,
                 Box::new(|this, window, cx| {
                     this.search.update(cx, |s, cx| s.set_value("", window, cx));
                     this.apply_search(window, cx);
@@ -951,6 +1000,7 @@ impl DatasetDocument {
             chips.push(chip(
                 SharedString::from(format!("chip-filter-{ix}")),
                 filter.describe(),
+                true,
                 Box::new(move |this, window, cx| this.remove_filter(ix, window, cx)),
                 cx,
             ));
@@ -959,62 +1009,59 @@ impl DatasetDocument {
             chips.push(chip(
                 "chip-where".into(),
                 format!("WHERE {}", spec.where_sql),
+                true,
                 Box::new(|this, window, cx| this.set_where(String::new(), window, cx)),
                 cx,
             ));
         }
-        let shown = self.grid.read(cx).row_count();
-        Some(
-            h_flex()
-                .px_3()
-                .py_1p5()
-                .gap_2()
-                .flex_wrap()
-                .flex_shrink_0()
-                .border_b_1()
-                .border_color(theme.border)
-                .bg(theme.background)
-                .child(Icon::new(Lucide::ListFilter).small().text_color(theme.muted_foreground))
-                .children(chips)
-                .child(
-                    Button::new("clear-filters")
-                        .label("Clear")
-                        .xsmall()
-                        .ghost()
-                        .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx))),
-                )
-                .child(div().flex_1())
-                .when(self.build.is_none(), |this| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!("{} of {}", format::count(shown), format::plural(self.dataset.row_count, "row", "rows"))),
-                    )
-                })
-                .into_any_element(),
-        )
+        for (ix, key) in spec.sort.iter().enumerate() {
+            let arrow = if key.descending { "↓" } else { "↑" };
+            let column = key.column.clone();
+            chips.push(chip(
+                SharedString::from(format!("chip-sort-{ix}")),
+                format!("{arrow} {}", key.column),
+                false,
+                Box::new(move |this, window, cx| this.sort_by(&column, None, true, window, cx)),
+                cx,
+            ));
+        }
+        if spec.has_filter() {
+            chips.push(
+                Button::new("clear-filters")
+                    .label("Clear")
+                    .xsmall()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, window, cx| this.clear_filters(window, cx)))
+                    .into_any_element(),
+            );
+        }
+        chips
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let selected = DocTab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
         let show_summaries = self.grid.read(cx).show_summaries();
+        let border = theme.border;
+        let background = theme.background;
+        let chips = self.filter_chips(cx);
         h_flex()
-            .px_2()
+            .px_3()
+            .pb_2()
+            .gap_3()
             .flex_shrink_0()
-            .justify_between()
             .border_b_1()
-            .border_color(theme.border)
-            .bg(theme.background)
+            .border_color(border)
+            .bg(background)
             .child(
                 TabBar::new("doc-tabs")
-                    .underline()
+                    .segmented()
                     .small()
                     .selected_index(selected)
                     .on_click(cx.listener(|this, ix: &usize, window, cx| this.set_tab(DocTab::ALL[*ix], window, cx)))
                     .children(DocTab::ALL.iter().map(|t| t.label())),
             )
+            .child(h_flex().flex_1().min_w_0().gap_1p5().flex_wrap().children(chips))
             .child(
                 h_flex()
                     .gap_1()
@@ -1086,6 +1133,14 @@ impl DatasetDocument {
             if view.truncated {
                 text.push_str(" · result limited");
             }
+            if let Some(first) = self.spec.sort.first() {
+                let arrow = if first.descending { "↓" } else { "↑" };
+                let more = self.spec.sort.len() - 1;
+                text.push_str(&format!(" · sorted by {} {arrow}", first.column));
+                if more > 0 {
+                    text.push_str(&format!(" +{more}"));
+                }
+            }
             left.push(div().child(text).into_any_element());
         }
         if let Some(error) = &self.error {
@@ -1119,6 +1174,32 @@ impl DatasetDocument {
                 )
             };
             right.push(div().child(text).into_any_element());
+            // Like a spreadsheet: totals of the selected numbers.
+            if let Some((stats_for, stats)) = &self.selection_stats
+                && *stats_for == selection
+            {
+                let strong = |label: &str, value: String| {
+                    h_flex()
+                        .gap_1()
+                        .child(label.to_string())
+                        .child(div().text_color(theme.foreground).font_weight(FontWeight::MEDIUM).child(value))
+                        .into_any_element()
+                };
+                match stats {
+                    Some(stats) if stats.numbers > 0 => {
+                        let n = parquetry_engine::format_number;
+                        right.push(strong("sum", n(stats.sum)));
+                        right.extend(stats.mean().map(|mean| strong("avg", n(mean))));
+                        right.extend(stats.min.map(|min| strong("min", n(min))));
+                        right.extend(stats.max.map(|max| strong("max", n(max))));
+                    }
+                    Some(stats) if stats.values < stats.cells => {
+                        right.push(div().child(format!("{} non-null", format::count(stats.values))).into_any_element());
+                    }
+                    Some(_) => {}
+                    None => right.push(div().child("too many rows to total").into_any_element()),
+                }
+            }
         }
         let hidden = self.dataset.columns.len() - grid.display_columns().len();
         if hidden > 0 {
@@ -1238,7 +1319,6 @@ impl Render for DatasetDocument {
                 window.push_notification("Computing exact summaries over all rows…", cx);
             }))
             .child(self.render_toolbar(window, cx))
-            .children(self.render_filter_bar(cx))
             .child(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(self.render_status(cx))

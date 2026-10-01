@@ -11,7 +11,7 @@ use gpui_kit::*;
 use parquetry_engine::ColumnKind;
 
 use crate::cache::CellState;
-use crate::chart::{ChartColors, chart_placeholder, footer_labels, null_label, paint_chart, thousands};
+use crate::chart::{chart_colors, chart_placeholder, footer_labels, kind_badge, kind_color, null_color, null_label, paint_chart, thousands};
 use crate::layout::{ColumnLayout, RowViewport, fitting_chars, thumb, truncate_chars};
 use crate::selection::SelectionKind;
 use crate::state::{Drag, Frame, GridState, Hit, Metrics, SummaryState};
@@ -78,6 +78,7 @@ enum CellSnap {
 struct Fonts {
     mono: Font,
     mono_italic: Font,
+    mono_bold: Font,
     ui: Font,
     ui_bold: Font,
 }
@@ -276,6 +277,7 @@ impl Element for GridElement {
         let fonts = Fonts {
             mono: font(theme.mono_font_family.clone()),
             mono_italic: font(theme.mono_font_family.clone()).italic(),
+            mono_bold: font(theme.mono_font_family.clone()).bold(),
             ui: font(theme.font_family.clone()),
             ui_bold: font(theme.font_family.clone()).bold(),
         };
@@ -466,7 +468,6 @@ fn paint_body(
     if body_height <= 0.0 {
         return;
     }
-    let body = Bounds::new(point(px(body_left), px(body_top)), size(px(body_width), px(body_height)));
     let row_count = snap.row_count;
     let display_len = snap.display_len;
     let selection = snap.selection;
@@ -480,8 +481,18 @@ fn paint_body(
         body_top + (row as f64 - frame.viewport.top.floor()) as f32 * m.row_height - top_fraction
     };
 
-    // Row backgrounds, stripes and hover across the full body width.
-    window.with_content_mask(Some(ContentMask { bounds: body }), |window| {
+    // Rows end at the last column: the space to its right stays plain background.
+    let content_width = match frame.layout.len() {
+        0 => 0.0,
+        len => {
+            let last = len - 1;
+            (frame.layout.left(last, frame.scroll_x) + frame.layout.width(last)).clamp(0.0, body_width)
+        }
+    };
+    let rows_area = Bounds::new(point(px(body_left), px(body_top)), size(px(content_width), px(body_height)));
+
+    // Row backgrounds, stripes and hover across the table's width.
+    window.with_content_mask(Some(ContentMask { bounds: rows_area }), |window| {
         for row in prepaint.visible_rows.clone() {
             let y = row_y(row);
             let background = if hover_row == Some(row) {
@@ -601,7 +612,7 @@ fn paint_body(
     }
 
     // Row separators.
-    window.with_content_mask(Some(ContentMask { bounds: body }), |window| {
+    window.with_content_mask(Some(ContentMask { bounds: rows_area }), |window| {
         for row in prepaint.visible_rows.clone() {
             let y = row_y(row) + m.row_height - 1.0;
             window.paint_quad(fill(
@@ -792,14 +803,31 @@ fn paint_header_cells(
             let sort_key = sort.iter().position(|k| k.column == info.name);
             let arrow_space = if sort_key.is_some() { m.font_size * 1.2 } else { 0.0 };
             let name_top = top + m.padding * 0.75;
+            // Kind badge: a tinted chip with a short glyph (# Aa Dt …).
+            let badge = kind_badge(info.kind);
+            let kind = kind_color(info.kind, theme);
+            let small_char = m.char_width * m.small_font_size / m.font_size;
+            let badge_width = (badge.chars().count() as f32 * small_char + m.padding * 0.7).round();
+            let badge_height = (m.font_size * 1.15).round();
+            let badge_top = name_top + (m.font_size * 1.35 - badge_height) / 2.0;
+            let show_badge = inner_width > badge_width * 3.0;
+            let name_left = if show_badge { inner_left + badge_width + m.padding * 0.45 } else { inner_left };
+            if show_badge {
+                window.paint_quad(
+                    fill(Bounds::new(point(px(inner_left), px(badge_top)), size(px(badge_width), px(badge_height))), kind.opacity(0.18))
+                        .corner_radii(px((m.rem * 0.2).round())),
+                );
+                let pad = m.padding * 0.35;
+                paint_label(badge, &fonts.mono_bold, m.small_font_size, kind, inner_left + pad, badge_top, badge_width - pad, badge_height, false, window, cx);
+            }
             paint_label(
                 &info.name,
                 &fonts.ui_bold,
                 m.font_size,
                 theme.foreground,
-                inner_left,
+                name_left,
                 name_top,
-                inner_width - arrow_space,
+                inner_left + inner_width - arrow_space - name_left,
                 m.font_size * 1.35,
                 false,
                 window,
@@ -831,7 +859,6 @@ fn paint_header_cells(
                 _ => String::new(),
             };
             // Mono text at the small size: exact width from the cell font's advance.
-            let small_char = m.char_width * m.small_font_size / m.font_size;
             let null_width = if nulls.is_empty() { 0.0 } else { ((nulls.chars().count() as f32 + 0.5) * small_char).min(inner_width * 0.6) };
             paint_label(
                 &info.type_label(),
@@ -851,7 +878,7 @@ fn paint_header_cells(
                     &nulls,
                     &fonts.mono,
                     m.small_font_size,
-                    theme.warning,
+                    null_color(theme),
                     inner_left + inner_width - null_width,
                     type_top,
                     null_width,
@@ -876,19 +903,22 @@ fn paint_header_cells(
                         Some(Hit::HeaderChart(c, item)) if c == display_ix => item,
                         _ => None,
                     };
-                    paint_chart(
-                        &summary,
-                        chart,
-                        hovered_item,
-                        ChartColors {
-                            bar: theme.chart_1.opacity(0.85),
-                            bar_hover: theme.chart_1,
-                            other: theme.muted_foreground.opacity(0.35),
-                            null: theme.warning.opacity(0.6),
-                            baseline: theme.border,
-                        },
-                        window,
+                    paint_chart(&summary, chart, hovered_item, chart_colors(info.kind, theme), window);
+                    // Null share: a thin line along the bottom of the header.
+                    let line = (m.rem * 0.15).max(2.0).round();
+                    let line_top = top + m.header_height - line - (m.padding * 0.35).round();
+                    let fraction = summary.null_fraction().clamp(0.0, 1.0) as f32;
+                    window.paint_quad(
+                        fill(Bounds::new(point(px(inner_left), px(line_top)), size(px(inner_width.max(0.0)), px(line))), theme.border.opacity(0.6))
+                            .corner_radii(px(line / 2.0)),
                     );
+                    if fraction > 0.0 {
+                        let w = (inner_width * fraction).max(line);
+                        window.paint_quad(
+                            fill(Bounds::new(point(px(inner_left), px(line_top)), size(px(w), px(line))), null_color(theme))
+                                .corner_radii(px(line / 2.0)),
+                        );
+                    }
                     if summary.preferred_chart() == parquetry_engine::ChartKind::None {
                         let text = chart_placeholder(&summary);
                         paint_label(&text, &fonts.ui, m.font_size, theme.muted_foreground, inner_left, top + chart_top + (chart_bottom - chart_top - m.font_size * 1.3) / 2.0, inner_width, m.font_size * 1.3, false, window, cx);

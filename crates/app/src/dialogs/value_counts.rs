@@ -24,6 +24,8 @@ pub struct ValueCountsPanel {
     view: View,
     column: usize,
     name: String,
+    /// The column's kind colour, for the count bars.
+    bar_color: Hsla,
     search: Entity<InputState>,
     counts: Option<ValueCounts>,
     error: Option<String>,
@@ -37,7 +39,9 @@ pub struct ValueCountsPanel {
 
 impl ValueCountsPanel {
     fn new(doc: WeakEntity<DatasetDocument>, view: View, column: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let name = view.dataset.columns.get(column).map(|c| c.name.clone()).unwrap_or_default();
+        let info = view.dataset.columns.get(column);
+        let name = info.map(|c| c.name.clone()).unwrap_or_default();
+        let bar_color = info.map(|c| parquetry_grid::chart::kind_color(c.kind, cx.theme())).unwrap_or(cx.theme().chart_1);
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search values…"));
         let subscription = cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -49,6 +53,7 @@ impl ValueCountsPanel {
             view,
             column,
             name,
+            bar_color,
             search,
             counts: None,
             error: None,
@@ -158,7 +163,7 @@ impl ValueCountsPanel {
                                 .bottom_0()
                                 .w(relative(share))
                                 .rounded(theme.radius)
-                                .bg(theme.chart_1.opacity(0.12)),
+                                .bg(self.bar_color.opacity(0.14)),
                         )
                         .child(
                             div().w(rems(1.)).flex_shrink_0().when(chosen, |d| d.child(Icon::new(IconName::Check).xsmall())),

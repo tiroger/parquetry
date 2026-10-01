@@ -6,7 +6,7 @@ use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use parquetry_engine::{ColumnSummary, format_number};
-use parquetry_grid::chart::{ChartColors, chart_placeholder, compact_count, null_label, paint_chart};
+use parquetry_grid::chart::{chart_colors, chart_placeholder, compact_count, null_label, paint_chart};
 use parquetry_grid::{GridState, SummaryState};
 
 /// Emitted when a column row is chosen.
@@ -45,13 +45,7 @@ impl ColumnsTab {
                     _ => None,
                 };
                 let hidden = grid.is_hidden(ix);
-                let colors = ChartColors {
-                    bar: theme.chart_1.opacity(0.85),
-                    bar_hover: theme.chart_1,
-                    other: theme.muted_foreground.opacity(0.35),
-                    null: theme.warning.opacity(0.6),
-                    baseline: theme.border,
-                };
+                let colors = chart_colors(info.kind, &theme);
                 let chart_summary = summary.clone();
                 let chart = canvas(
                     |_, _, _| (),

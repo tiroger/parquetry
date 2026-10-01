@@ -57,6 +57,23 @@ pub fn display_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Split a location into its folder (for display, with `~` for home) and its last
+/// part: `/Users/me/data/a.parquet` → (`~/data`, `a.parquet`).
+pub fn split_location(location: &str) -> (String, String) {
+    let trimmed = location.trim_end_matches(['/', '\\']);
+    let remote = parquetry_engine::is_remote(trimmed);
+    let cut = if remote { trimmed.rfind('/') } else { trimmed.rfind(['/', '\\']) };
+    match cut {
+        // Keep `s3://bucket` whole rather than splitting the scheme.
+        Some(ix) if !(remote && trimmed[..ix].ends_with('/')) => {
+            let (folder, name) = (&trimmed[..ix], &trimmed[ix + 1..]);
+            let folder = if folder.is_empty() { "/".to_string() } else { display_path(folder) };
+            (folder, name.to_string())
+        }
+        _ => (String::new(), trimmed.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +88,11 @@ mod tests {
         assert_eq!(bytes(2_000_000), "2 MB");
         assert_eq!(plural(1, "row", "rows"), "1 row");
         assert_eq!(plural(1200, "row", "rows"), "1,200 rows");
+        assert_eq!(split_location("/data/x/a.parquet"), ("/data/x".to_string(), "a.parquet".to_string()));
+        assert_eq!(split_location("/a.parquet"), ("/".to_string(), "a.parquet".to_string()));
+        assert_eq!(split_location("s3://bucket/dir/"), ("s3://bucket".to_string(), "dir".to_string()));
+        assert_eq!(split_location("s3://bucket"), (String::new(), "s3://bucket".to_string()));
+        assert_eq!(split_location(r"C:\data\a.parquet"), (r"C:\data".to_string(), "a.parquet".to_string()));
         assert_eq!(duration_ms(850), "850 ms");
         assert_eq!(duration_ms(2400), "2.4 s");
         assert_eq!(duration_ms(185_000), "3 min 5 s");

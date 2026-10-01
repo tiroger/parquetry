@@ -904,3 +904,44 @@ fn value_counts_are_complete_exact_and_searchable() {
     let none = value_counts(&filtered, tag, "zzz", 1000).wait().unwrap();
     assert_eq!((none.values.len(), none.distinct, none.matching_rows), (0, 0, 0));
 }
+
+#[test]
+fn selection_stats_match_duckdb() {
+    let fx = Fixture::new();
+    let path = fx.write(
+        "SELECT i AS id, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 0.5 END AS x, 'r' || (i % 3) AS label FROM range(10000) r(i)",
+        "sel.parquet",
+        "",
+    );
+    let ds = open(&fx, &path);
+    let (id, x, label) = (col(&ds, "id"), col(&ds, "x"), col(&ds, "label"));
+    let view = View::identity(&ds);
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6 * b.abs().max(1.0);
+
+    // Rows 100..200 of x: nulls skipped.
+    let s = view.selection_stats(100..200, vec![x]).wait().unwrap().unwrap();
+    let want: Vec<f64> = (100..200).filter(|i| i % 5 != 0).map(|i| i as f64 * 0.5).collect();
+    assert_eq!((s.cells, s.values, s.numbers), (100, 80, 80));
+    assert!(close(s.sum, want.iter().sum()));
+    assert!(close(s.mean().unwrap(), want.iter().sum::<f64>() / 80.0));
+    assert_eq!((s.min, s.max), (Some(50.5), Some(99.5)));
+
+    // Two numeric columns and a text one: text counts as values, not numbers.
+    let s = view.selection_stats(0..10, vec![id, x, label]).wait().unwrap().unwrap();
+    assert_eq!((s.cells, s.values, s.numbers), (30, 28, 18));
+    assert!(close(s.sum, 45.0 + 20.0)); // x: (1+2+3+4+6+7+8+9) * 0.5
+    assert_eq!((s.min, s.max), (Some(0.0), Some(9.0)));
+
+    // The whole view reads the source; a sorted view keeps the same totals.
+    let all = view.selection_stats(0..10_000, vec![id]).wait().unwrap().unwrap();
+    assert!(close(all.sum, (0..10_000).sum::<i64>() as f64));
+    let sorted = View::build(&ds, ViewSpec { sort: vec![SortKey::desc("id")], ..Default::default() }).wait().unwrap();
+    let first = sorted.selection_stats(0..3, vec![id]).wait().unwrap().unwrap();
+    assert!(close(first.sum, (9_999 + 9_998 + 9_997) as f64), "the sorted view's first rows");
+    let whole = sorted.selection_stats(0..10_000, vec![id]).wait().unwrap().unwrap();
+    assert!(close(whole.sum, all.sum));
+
+    // Nothing numeric: no sum or mean.
+    let text = view.selection_stats(0..10, vec![label]).wait().unwrap().unwrap();
+    assert_eq!((text.numbers, text.mean(), text.min), (0, None, None));
+}

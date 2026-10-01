@@ -34,7 +34,9 @@ impl AppState {
                 }
             (
                 engine_changed,
-                before.appearance != state.settings.appearance || before.font_size != state.settings.font_size,
+                before.appearance != state.settings.appearance
+                    || before.dark_theme != state.settings.dark_theme
+                    || before.font_size != state.settings.font_size,
             )
         });
         if appearance_changed {

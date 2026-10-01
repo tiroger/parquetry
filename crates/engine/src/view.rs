@@ -225,6 +225,66 @@ impl View {
         })
     }
 
+    /// Sum, average, min and max of the numbers in a block of cells (rows × columns),
+    /// plus how many cells hold a value. `None` when the block is too costly to scan:
+    /// over a million scattered rows of a sorted or filtered view that isn't all of it.
+    pub fn selection_stats(&self, rows: Range<u64>, columns: Vec<usize>) -> Job<Option<SelectionStats>> {
+        let view = self.clone();
+        self.dataset.engine.run(Lane::Interactive, move |conn| {
+            view.dataset.prepare_remote(conn)?;
+            let rows = rows.start.min(view.row_count)..rows.end.min(view.row_count);
+            let cols: Vec<&ColumnInfo> = columns.iter().filter_map(|&ix| view.dataset.columns.get(ix)).collect();
+            let mut stats = SelectionStats { cells: (rows.end - rows.start) * cols.len() as u64, ..Default::default() };
+            if rows.is_empty() || cols.is_empty() {
+                return Ok(Some(stats));
+            }
+            let projection: Vec<String> = cols
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{} AS c{i}", qualified(Some("s"), &c.name)))
+                .collect();
+            let projection = projection.join(", ");
+            let whole = rows.start == 0 && rows.end == view.row_count;
+            let inner = if whole {
+                // Order doesn't matter for aggregates: read the source with the filters.
+                format!("SELECT {projection} FROM ({}) s", view.unordered_source_sql()?)
+            } else if view.is_index() && rows.end - rows.start > 1_000_000 {
+                return Ok(None);
+            } else {
+                view.rows_sql(conn, &projection, rows.start, rows.end - rows.start)?
+            };
+            let mut aggregates = Vec::new();
+            for (i, c) in cols.iter().enumerate() {
+                aggregates.push(format!("count(c{i})"));
+                if c.kind.is_numeric() {
+                    let x = format!("CAST(c{i} AS DOUBLE)");
+                    aggregates.push(format!("sum({x}), min({x}), max({x})"));
+                }
+            }
+            let sql = format!("SELECT {} FROM ({inner}) r", aggregates.join(", "));
+            conn.query_row(&sql, [], |row| {
+                let mut at = 0;
+                for c in &cols {
+                    let count = row.get::<_, i64>(at)?.max(0) as u64;
+                    at += 1;
+                    stats.values += count;
+                    if c.kind.is_numeric() {
+                        let (sum, min, max): (Option<f64>, Option<f64>, Option<f64>) = (row.get(at)?, row.get(at + 1)?, row.get(at + 2)?);
+                        at += 3;
+                        if let (Some(sum), Some(min), Some(max)) = (sum, min, max) {
+                            stats.numbers += count;
+                            stats.sum += sum;
+                            stats.min = Some(stats.min.map_or(min, |m: f64| m.min(min)));
+                            stats.max = Some(stats.max.map_or(max, |m: f64| m.max(max)));
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+            Ok(Some(stats))
+        })
+    }
+
     /// Rows as JSON objects (typed values, nested structures preserved).
     pub fn fetch_json(&self, rows: Range<u64>, columns: Vec<usize>, limit: usize) -> Job<Vec<String>> {
         let view = self.clone();
@@ -676,6 +736,26 @@ fn string_value(array: &dyn Array, row: usize) -> Option<String> {
 }
 
 /// Single-line text for a grid cell: control characters become visible symbols.
+/// Totals for a block of selected cells (see [`View::selection_stats`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SelectionStats {
+    /// Cells in the block.
+    pub cells: u64,
+    /// Cells holding a value (not null).
+    pub values: u64,
+    /// Non-null cells of numeric columns.
+    pub numbers: u64,
+    pub sum: f64,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+impl SelectionStats {
+    pub fn mean(&self) -> Option<f64> {
+        (self.numbers > 0).then(|| self.sum / self.numbers as f64)
+    }
+}
+
 pub fn display_text(value: &str) -> Arc<str> {
     if !value.chars().any(|c| c.is_control()) {
         return Arc::from(value);

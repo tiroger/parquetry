@@ -129,6 +129,8 @@ fn register_global_actions(cx: &mut App) {
     cx.on_action(|_: &UseLightAppearance, cx| AppState::update_settings(cx, |s| s.appearance = settings::Appearance::Light));
     cx.on_action(|_: &UseDarkAppearance, cx| AppState::update_settings(cx, |s| s.appearance = settings::Appearance::Dark));
     cx.on_action(|_: &UseSystemAppearance, cx| AppState::update_settings(cx, |s| s.appearance = settings::Appearance::System));
+    cx.on_action(|_: &UseNavyOakTheme, cx| AppState::update_settings(cx, |s| s.dark_theme = settings::DarkTheme::NavyOak));
+    cx.on_action(|_: &UseSlateTheme, cx| AppState::update_settings(cx, |s| s.dark_theme = settings::DarkTheme::Slate));
     cx.on_action(|_: &ClearRecents, cx| {
         AppState::update_settings(cx, |s| s.recents.clear());
         actions::set_menus(cx);

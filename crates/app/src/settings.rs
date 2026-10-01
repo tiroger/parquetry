@@ -27,6 +27,32 @@ impl Appearance {
     }
 }
 
+/// The palette used in dark mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DarkTheme {
+    #[default]
+    NavyOak,
+    Slate,
+}
+
+impl DarkTheme {
+    pub fn label(self) -> &'static str {
+        match self {
+            DarkTheme::NavyOak => "Navy & Oak",
+            DarkTheme::Slate => "Slate",
+        }
+    }
+
+    /// Name in `themes/parquetry.json`.
+    pub fn theme_name(self) -> &'static str {
+        self.label()
+    }
+
+    pub fn all() -> [DarkTheme; 2] {
+        [DarkTheme::NavyOak, DarkTheme::Slate]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecentItem {
     pub location: String,
@@ -40,6 +66,7 @@ pub struct RecentItem {
 pub struct Settings {
     pub engine: EngineSettings,
     pub appearance: Appearance,
+    pub dark_theme: DarkTheme,
     /// Base font size in points; the whole interface scales with it.
     pub font_size: f32,
     pub show_summaries: bool,
@@ -54,6 +81,7 @@ impl Default for Settings {
         Self {
             engine: EngineSettings::default(),
             appearance: Appearance::System,
+            dark_theme: DarkTheme::NavyOak,
             font_size: DEFAULT_FONT_SIZE,
             show_summaries: true,
             reopen_last_session: true,
