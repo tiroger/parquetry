@@ -8,7 +8,7 @@ Built in Rust with [GPUI](https://gpui-kit.com) and [DuckDB](https://duckdb.org)
 
 ## Install
 
-**macOS** (13+, Apple Silicon). The app updates itself.
+**macOS** (13+, Apple Silicon or Intel). The app updates itself.
 
 ```sh
 brew install --cask tiroger/tap/parquetry

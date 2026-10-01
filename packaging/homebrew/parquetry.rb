@@ -16,7 +16,6 @@ cask "parquetry" do
   end
 
   auto_updates true # Sparkle
-  depends_on arch: :arm64 # Apple Silicon builds only, for now
   depends_on macos: :ventura # macOS 13 or newer
 
   app "Parquetry.app"

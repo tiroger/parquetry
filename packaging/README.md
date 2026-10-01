@@ -123,6 +123,11 @@ submissions print the notary log.
 
 ## CI release
 
+Automated releases are on (`AUTOMATED_RELEASES=true`, all secrets set): bump the
+workspace version, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The
+workflow publishes a universal, notarized macOS build with its update feed, the
+Windows zip, the Homebrew cask and the Scoop manifest.
+
 Push a tag matching the workspace version: `git tag v0.1.0 && git push origin v0.1.0`.
 Dry run (build, sign and notarize without publishing; the files are kept as
 workflow artifacts for a week): `gh workflow run release.yml -f tag=v0.2.0 -f publish=false`.
