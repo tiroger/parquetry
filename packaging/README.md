@@ -124,7 +124,10 @@ submissions print the notary log.
 ## CI release
 
 Push a tag matching the workspace version: `git tag v0.1.0 && git push origin v0.1.0`.
-The workflow only runs on tags once the repository variable
+Dry run (build, sign and notarize without publishing; the files are kept as
+workflow artifacts for a week): `gh workflow run release.yml -f tag=v0.2.0 -f publish=false`.
+
+The macOS job only runs on tags once the repository variable
 `AUTOMATED_RELEASES` is `true` (set it after adding the secrets above:
 `gh variable set AUTOMATED_RELEASES --body true`); it can always be started by
 hand from the Actions tab. Without it, publish a locally built release:

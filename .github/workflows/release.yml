@@ -8,6 +8,10 @@ on:
       tag:
         description: "Existing tag to (re)build, e.g. v0.1.0"
         required: true
+      publish:
+        description: "Publish (release assets, tap, bucket). Off = dry run: build, sign, notarize, keep the files as workflow artifacts."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,11 +29,14 @@ jobs:
     # Opt-in: set the repository variable AUTOMATED_RELEASES=true once the
     # signing secrets exist. Until then macOS releases are built and published by
     # hand (see packaging/README.md); the Windows job below runs regardless.
-    if: vars.AUTOMATED_RELEASES == 'true'
+    # Manual runs (dry runs included) always build macOS.
+    if: vars.AUTOMATED_RELEASES == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 120
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Tag pushes publish; manual runs only when asked to.
+      PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,7 +120,20 @@ jobs:
           fi
           scripts/appcast.sh "target/dist/Parquetry-$VERSION.zip"
 
+      - name: Keep the files (dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parquetry-macos-${{ env.TAG }}
+          path: |
+            target/dist/*.zip
+            target/dist/*.dmg
+            target/dist/SHA256SUMS
+            target/dist/appcast.xml
+          retention-days: 7
+
       - name: Publish GitHub release
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -131,6 +151,7 @@ jobs:
           fi
 
       - name: Update Homebrew tap
+        if: env.PUBLISH == 'true'
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           GITHUB_OWNER: ${{ github.repository_owner }}
@@ -173,6 +194,8 @@ jobs:
     timeout-minutes: 120
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Tag pushes publish; manual runs only when asked to.
+      PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
     defaults:
       run:
         shell: bash
@@ -220,7 +243,16 @@ jobs:
           Set-Content -Path "target\dist\$name.zip.sha256" -Value "$hash  $name.zip" -NoNewline
           Get-Content "target\dist\$name.zip.sha256"
 
+      - name: Keep the files (dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parquetry-windows-${{ env.TAG }}
+          path: target/dist/Parquetry-*-windows-x64.zip*
+          retention-days: 7
+
       - name: Publish to the GitHub release
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -236,6 +268,7 @@ jobs:
           fi
 
       - name: Update Scoop bucket
+        if: env.PUBLISH == 'true'
         env:
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
           GITHUB_OWNER: ${{ github.repository_owner }}
