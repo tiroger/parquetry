@@ -13,6 +13,8 @@ mod format;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod instance;
 mod notebook;
+#[cfg(any(target_os = "macos", windows))]
+mod notebook_window;
 mod session;
 mod settings;
 mod sql_panel;
@@ -104,6 +106,12 @@ fn main() {
         })
         .detach();
 
+        // Notebook windows' marimo servers stop with Parquetry.
+        cx.on_app_quit(|_| {
+            notebook::MarimoServer::stop_all();
+            async {}
+        })
+        .detach();
         let session = session::SessionKeeper::start(cx);
         if initial.is_empty() && session::should_restore(cx) && !session.windows.is_empty() {
             // Front window last, so it ends up in front.

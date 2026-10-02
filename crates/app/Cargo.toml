@@ -20,6 +20,11 @@ dirs.workspace = true
 parking_lot.workspace = true
 futures.workspace = true
 
+# The notebook window: the system web view (WKWebView, WebView2) in a GPUI window.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+wry = { version = "0.57", default-features = false }
+raw-window-handle = "0.6"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_apple.workspace = true
 objc2 = "0.6"

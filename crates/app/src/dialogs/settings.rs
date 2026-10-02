@@ -10,7 +10,7 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
 
 use crate::app_state::AppState;
-use crate::settings::{Appearance, DarkTheme, NotebookLibrary, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
+use crate::settings::{Appearance, DarkTheme, NotebookLibrary, NotebookTarget, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
 
 /// Profile names from `~/.aws/config` and `~/.aws/credentials`.
 pub fn aws_profiles() -> Vec<String> {
@@ -60,6 +60,7 @@ pub struct SettingsForm {
     region: Entity<InputState>,
     endpoint: Entity<InputState>,
     notebook_library: Entity<SelectState<Vec<SharedString>>>,
+    notebook_target: Entity<SelectState<Vec<SharedString>>>,
     notebooks_dir: Entity<InputState>,
     path_style: bool,
     anonymous: bool,
@@ -127,6 +128,15 @@ impl SettingsForm {
                     cx,
                 )
             }),
+            notebook_target: cx.new(|cx| {
+                let ix = NotebookTarget::all().iter().position(|t| *t == settings.notebook_target).unwrap_or(0);
+                SelectState::new(
+                    NotebookTarget::all().iter().map(|t| SharedString::from(t.label())).collect::<Vec<_>>(),
+                    Some(IndexPath::new(ix)),
+                    window,
+                    cx,
+                )
+            }),
             notebooks_dir: input(
                 settings.notebooks_dir.clone().unwrap_or_default(),
                 &crate::format::display_path(&crate::notebook::default_notebooks_dir().to_string_lossy()),
@@ -164,6 +174,8 @@ impl SettingsForm {
         let library_ix = self.notebook_library.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
         settings.notebook_library = NotebookLibrary::all()[library_ix.min(NotebookLibrary::all().len() - 1)];
         settings.notebooks_dir = text(&self.notebooks_dir);
+        let target_ix = self.notebook_target.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
+        settings.notebook_target = NotebookTarget::all()[target_ix.min(NotebookTarget::all().len() - 1)];
         settings.engine.s3.path_style = self.path_style;
         settings.engine.s3.anonymous = self.anonymous;
         settings.engine.memory_limit = text(&self.memory);
@@ -316,6 +328,7 @@ impl Render for SettingsForm {
             .child(
                 section("Notebooks", cx)
                     .child(row("Open in marimo with", Select::new(&self.notebook_library).small(), cx))
+                    .child(row("Show notebooks in", Select::new(&self.notebook_target).small(), cx))
                     .child(row("Save notebooks in", Input::new(&self.notebooks_dir).small(), cx))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                         "Notebooks open with uv (docs.astral.sh/uv), which installs marimo and the libraries they need on first use.",

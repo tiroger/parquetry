@@ -48,6 +48,28 @@ impl NotebookLibrary {
     }
 }
 
+/// Where Open in marimo shows the notebook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NotebookTarget {
+    /// A Parquetry window (macOS and Windows).
+    #[default]
+    Window,
+    Browser,
+}
+
+impl NotebookTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            NotebookTarget::Window => "A Parquetry window",
+            NotebookTarget::Browser => "The browser",
+        }
+    }
+
+    pub fn all() -> [NotebookTarget; 2] {
+        [NotebookTarget::Window, NotebookTarget::Browser]
+    }
+}
+
 /// The palette used in dark mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DarkTheme {
@@ -97,6 +119,7 @@ pub struct Settings {
     /// (`None`: ~/Documents/Parquetry Notebooks).
     pub notebook_library: NotebookLibrary,
     pub notebooks_dir: Option<String>,
+    pub notebook_target: NotebookTarget,
     pub recents: Vec<RecentItem>,
     pub sql_history: Vec<String>,
 }
@@ -112,6 +135,7 @@ impl Default for Settings {
             reopen_last_session: true,
             notebook_library: NotebookLibrary::Polars,
             notebooks_dir: None,
+            notebook_target: NotebookTarget::Window,
             recents: Vec::new(),
             sql_history: Vec::new(),
         }

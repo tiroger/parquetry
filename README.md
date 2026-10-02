@@ -45,6 +45,10 @@ parquetry s3://bucket/path/         # S3
   groups, encodings, compression), and DuckDB SQL across open files.
 - **Go to column** (⌘P) for wide tables, and **reopen where you left off**:
   windows, tabs, filters, sort and column layout come back at launch.
+- **Open in marimo** (⌘⇧M): the current view as a [marimo](https://marimo.io)
+  notebook in a Parquetry window (or your browser), run through
+  [uv](https://docs.astral.sh/uv/) with nothing else to install. Or **copy the
+  view as code**: DuckDB SQL, Polars or pandas.
 - **Export** the current view to Parquet, CSV, TSV or JSON.
 - **Compare** two datasets: schema, missing rows, changed values.
 - **S3**: bucket browser, AWS profiles and SSO, MinIO/R2 endpoints.
