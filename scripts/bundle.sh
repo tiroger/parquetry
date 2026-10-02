@@ -47,7 +47,21 @@ SKIP_SPARKLE="${SKIP_SPARKLE:-0}"
 SPARKLE_VERSION="${SPARKLE_VERSION:-2.10.0}"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/tiroger/parquetry/releases/latest/download/appcast.xml}"
 
-APP_NAME="Parquetry"
+# PARQUETRY_VARIANT=preview: "Parquetry Preview", for trying branch builds. It
+# installs next to Parquetry (own bundle id, settings and cache), never updates
+# itself, isn't the default app for data files, and has no Quick Look extension.
+VARIANT="${PARQUETRY_VARIANT:-stable}"
+export PARQUETRY_VARIANT="$VARIANT"
+case "$VARIANT" in
+stable)
+	APP_NAME="Parquetry" BUNDLE_ID="io.parquetry.app" HANDLER_RANK="Default" URL_SCHEME="parquetry" ICON="AppIcon.icns"
+	;;
+preview)
+	APP_NAME="Parquetry Preview" BUNDLE_ID="io.parquetry.app.preview" HANDLER_RANK="Alternate" URL_SCHEME="parquetry-preview" ICON="AppIcon-Preview.icns"
+	SKIP_SPARKLE=1 SKIP_QUICKLOOK=1
+	;;
+*) printf 'error: PARQUETRY_VARIANT must be stable or preview, not %s\n' "$VARIANT" >&2; exit 1 ;;
+esac
 BIN_NAME="parquetry"
 DIST="$TARGET_DIR/dist"
 APP="$DIST/$APP_NAME.app"
@@ -171,17 +185,25 @@ log "Executable architectures: $ARCHS"
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-$(tr -d '[:space:]' <"$PACKAGING/sparkle_public_key.txt")}"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$BUILD/g" -e "s/@YEAR@/$(date +%Y)/g" \
 	-e "s|@SPARKLE_FEED_URL@|$SPARKLE_FEED_URL|g" -e "s|@SPARKLE_PUBLIC_KEY@|$SPARKLE_PUBLIC_KEY|g" \
+	-e "s|@APP_NAME@|$APP_NAME|g" -e "s|@BUNDLE_ID@|$BUNDLE_ID|g" \
+	-e "s|@HANDLER_RANK@|$HANDLER_RANK|g" -e "s|@URL_SCHEME@|$URL_SCHEME|g" \
 	"$PACKAGING/Info.plist.template" >"$CONTENTS/Info.plist"
+if grep -q '@[A-Z_]*@' "$CONTENTS/Info.plist"; then die "unrendered placeholders left in Info.plist"; fi
 plutil -lint -s "$CONTENTS/Info.plist" || die "rendered Info.plist is invalid"
 printf 'APPL????' >"$CONTENTS/PkgInfo"
 
-if [ -f "$ROOT/assets/icon/AppIcon.icns" ]; then
-	cp "$ROOT/assets/icon/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
+if [ -f "$ROOT/assets/icon/$ICON" ]; then
+	cp "$ROOT/assets/icon/$ICON" "$CONTENTS/Resources/AppIcon.icns"
 else
-	warn "assets/icon/AppIcon.icns missing (run: uv run --with pillow python assets/icon/make_icon.py)"
+	warn "assets/icon/$ICON missing (run: uv run --with pillow python assets/icon/make_icon.py)"
 fi
 
 install -m 755 "$PACKAGING/bin/parquetry" "$CONTENTS/Resources/bin/parquetry"
+if [ "$VARIANT" = preview ]; then
+	# The launcher talks to this copy, by bundle id and URL scheme.
+	sed -i '' -e "s/^BUNDLE_ID=\"io.parquetry.app\"$/BUNDLE_ID=\"$BUNDLE_ID\"/" \
+		-e "s|parquetry://open|$URL_SCHEME://open|g" "$CONTENTS/Resources/bin/parquetry"
+fi
 
 # --------------------------------------------------------------------------- #
 # DuckDB extensions

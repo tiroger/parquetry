@@ -592,7 +592,7 @@ impl Workspace {
                 v_flex()
                     .items_center()
                     .gap_1()
-                    .child(div().text_3xl().font_weight(FontWeight::BOLD).child("Parquetry"))
+                    .child(div().text_3xl().font_weight(FontWeight::BOLD).child(crate::variant::APP_NAME))
                     .child(div().text_color(theme.muted_foreground).child("Open Parquet, CSV, JSON, Arrow, Delta Lake and Iceberg — on disk or in S3.")),
             )
             .child(
@@ -744,8 +744,8 @@ impl Render for Workspace {
         let title = self
             .tabs
             .get(self.active)
-            .map(|t| format!("{} — Parquetry", self.tab_title(t, cx)))
-            .unwrap_or_else(|| "Parquetry".into());
+            .map(|t| format!("{} — {}", self.tab_title(t, cx), crate::variant::APP_NAME))
+            .unwrap_or_else(|| crate::variant::APP_NAME.into());
         window.set_window_title(&title);
         v_flex()
             .id("workspace")
@@ -821,7 +821,7 @@ pub fn open_window(specs: Vec<SourceSpec>, cx: &mut App) -> Option<WeakEntity<Wo
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(720.), px(460.))),
-        app_id: Some("io.parquetry.app".into()),
+        app_id: Some(crate::variant::APP_ID.into()),
         ..TitleBar::window_options()
     };
     let result = gpui_kit::open_window(options, cx, |window, cx| {

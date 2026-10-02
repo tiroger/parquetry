@@ -2,18 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Rendered by scripts/bundle.sh: @VERSION@ -> [workspace.package] version,
-  @BUILD@ -> git commit count (or a date stamp), @YEAR@ -> current year.
+  @BUILD@ -> git commit count (or a date stamp), @YEAR@ -> current year;
+  @APP_NAME@, @BUNDLE_ID@, @HANDLER_RANK@, @URL_SCHEME@ -> Parquetry or
+  Parquetry Preview (PARQUETRY_VARIANT=preview).
 -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.parquetry.app</string>
+	<string>@BUNDLE_ID@</string>
 	<key>CFBundleName</key>
-	<string>Parquetry</string>
+	<string>@APP_NAME@</string>
 	<key>CFBundleDisplayName</key>
-	<string>Parquetry</string>
+	<string>@APP_NAME@</string>
 	<key>CFBundleExecutable</key>
 	<string>parquetry</string>
 	<key>CFBundleIconFile</key>
@@ -62,7 +64,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Default</string>
+			<string>@HANDLER_RANK@</string>
 			<key>CFBundleTypeIconSystemGenerated</key>
 			<true/>
 			<key>LSItemContentTypes</key>
@@ -76,7 +78,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
-			<string>Default</string>
+			<string>@HANDLER_RANK@</string>
 			<key>CFBundleTypeIconSystemGenerated</key>
 			<true/>
 			<key>LSItemContentTypes</key>
@@ -224,12 +226,12 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>io.parquetry.app</string>
+			<string>@BUNDLE_ID@</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>parquetry</string>
+				<string>@URL_SCHEME@</string>
 			</array>
 		</dict>
 	</array>

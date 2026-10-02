@@ -13,7 +13,7 @@ pub fn about(window: &mut Window, cx: &mut App) {
                 .items_center()
                 .gap_2()
                 .py_4()
-                .child(div().text_2xl().font_weight(FontWeight::BOLD).child("Parquetry"))
+                .child(div().text_2xl().font_weight(FontWeight::BOLD).child(crate::variant::APP_NAME))
                 .child(div().text_sm().text_color(muted).child(format!("Version {}", env!("CARGO_PKG_VERSION"))))
                 .child(div().text_sm().text_center().child("A fast viewer for Parquet, CSV, JSON, Arrow, Delta Lake and Iceberg data, on disk or in S3."))
                 .child(div().text_xs().text_color(muted).child("Built with GPUI and DuckDB.")),

@@ -23,7 +23,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$ROOT/$TARGET_DIR" ;; esac
 DIST="$TARGET_DIR/dist"
-APP="$DIST/Parquetry.app"
+# PARQUETRY_VARIANT=preview packages "Parquetry Preview.app" as Parquetry-Preview-<v>.*
+case "${PARQUETRY_VARIANT:-stable}" in
+preview) APP_NAME="Parquetry Preview" FILE_BASE="Parquetry-Preview" ;;
+*) APP_NAME="Parquetry" FILE_BASE="Parquetry" ;;
+esac
+APP="$DIST/$APP_NAME.app"
 IDENTITY="${CODESIGN_IDENTITY:-}"
 
 if [ -t 2 ]; then C_B=$'\033[1;34m' C_R=$'\033[1;31m' C_0=$'\033[0m'; else C_B="" C_R="" C_0=""; fi
@@ -70,8 +75,8 @@ grep -q "flags=.*runtime" <<<"$SIG_INFO" || die "$APP was signed without the har
 grep -q "^Timestamp=" <<<"$SIG_INFO" || die "$APP signature has no secure timestamp"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-ZIP="$DIST/Parquetry-$VERSION.zip"
-DMG="$DIST/Parquetry-$VERSION.dmg"
+ZIP="$DIST/$FILE_BASE-$VERSION.zip"
+DMG="$DIST/$FILE_BASE-$VERSION.dmg"
 if [ ! -f "$ZIP" ]; then
 	log "$ZIP missing; packaging"
 	PACKAGE_FORMATS=zip "$ROOT/scripts/package.sh" >/dev/null

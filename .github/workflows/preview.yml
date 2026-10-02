@@ -1,0 +1,135 @@
+name: Preview
+
+# "Parquetry Preview" builds of feature branches, to try before merging. The
+# preview installs next to Parquetry (own name, settings and cache), never
+# updates itself, and isn't the default app for data files. Downloads are on
+# the run page under Artifacts.
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DUCKDB_EXT_LAYOUT: none
+  PARQUETRY_VARIANT: preview
+
+jobs:
+  macos:
+    name: macOS preview (signed, notarized)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # CFBundleVersion = commit count
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: preview-macos
+          cache-on-failure: true
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/parquetry-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERT"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -f pkcs12 -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Put it first in the search list, keeping the existing keychains.
+          existing=()
+          while IFS= read -r kc; do
+            kc="$(sed -e 's/^ *"//' -e 's/" *$//' <<<"$kc")"
+            if [ -n "$kc" ]; then existing+=("$kc"); fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+          rm -f "$CERT"
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n1)"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::no 'Developer ID Application' identity in MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build the app (Apple Silicon)
+        run: scripts/bundle.sh
+
+      - name: Package zip + dmg
+        run: scripts/package.sh
+
+      - name: Notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/notarize.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parquetry-preview-macos
+          path: |
+            target/dist/Parquetry-Preview-*.dmg
+            target/dist/Parquetry-Preview-*.zip
+          retention-days: 14
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ] && [ -f "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN"
+          fi
+
+  windows:
+    name: Windows preview
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: preview-windows
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build --release --locked -p parquetry
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $stage = "target\dist\Parquetry-Preview-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target\release\parquetry.exe, LICENSE, README.md -Destination $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parquetry-preview-windows
+          path: target/dist/Parquetry-Preview-windows-x64.zip
+          retention-days: 14

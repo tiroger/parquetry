@@ -149,6 +149,19 @@ commits the rendered cask to `OWNER/homebrew-tap`. It skips that last step if
 warning fails CI. It also lints the scripts, plists and cask, and smoke-tests
 the CLI launcher.
 
+## Preview builds
+
+Every push to a branch other than `main` runs `.github/workflows/preview.yml`,
+which builds **Parquetry Preview**: a notarized macOS app (Apple Silicon) and a
+Windows zip, downloadable from the run's Artifacts. The preview has its own
+name, bundle id (`io.parquetry.app.preview`), icon (with a PREVIEW band),
+settings, session and cache, so it installs next to Parquetry without touching
+it. It has no updater or Quick Look, and it's only an alternate handler for data
+files (Open With), never the default.
+
+Locally: `PARQUETRY_VARIANT=preview scripts/bundle.sh` (add `CODESIGN_IDENTITY`
+and run `package.sh`/`notarize.sh` with the same variable to share it).
+
 ## Windows
 
 `release.yml`'s `windows` job builds `parquetry.exe` on `windows-latest`, checks it

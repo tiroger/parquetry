@@ -12,6 +12,8 @@ Outputs (next to this file):
     AppIcon.icns    built with `iconutil` from a temporary AppIcon.iconset
                     (skipped with --no-icns or when iconutil is unavailable)
     Parquetry.ico   Windows icon (16-256 px), embedded in parquetry.exe
+    With --variant preview: icon_1024-preview.png, AppIcon-Preview.icns and
+    Parquetry-Preview.ico, the same icon with a PREVIEW band (branch builds).
 
 Design: a macOS Big Sur-style continuous-corner squircle (824 px body on a
 1024 px canvas) in deep navy, holding three table columns made of chevron
@@ -252,12 +254,40 @@ def rim(mask: Image.Image) -> Image.Image:
     return Image.fromarray(col.astype(np.uint8), "RGBA")
 
 
-def render(seed: int) -> Image.Image:
+def preview_band(img: Image.Image) -> Image.Image:
+    """An amber "PREVIEW" band across the bottom, for branch builds."""
+    from PIL import ImageFont
+
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    top, bottom = body_px(0.845), body_px(0.975)
+    d.rectangle([ORIGIN, top, ORIGIN + BODY, bottom], fill=(224, 168, 92, 255))
+    size = int((bottom - top) * 0.62)
+    font = None
+    for path in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf",
+                 "C:/Windows/Fonts/arialbd.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+        try:
+            font = ImageFont.truetype(path, size)
+            break
+        except OSError:
+            continue
+    font = font or ImageFont.load_default()
+    text = "PREVIEW"
+    box = d.textbbox((0, 0), text, font=font)
+    x = ORIGIN + (BODY - (box[2] - box[0])) / 2 - box[0]
+    y = top + ((bottom - top) - (box[3] - box[1])) / 2 - box[1]
+    d.text((x, y), text, font=font, fill=(26, 18, 6, 255))
+    return Image.alpha_composite(img, layer)
+
+
+def render(seed: int, preview: bool = False) -> Image.Image:
     rng = np.random.default_rng(seed)
     mask = squircle_mask(SIZE, BODY, ORIGIN)
     img = vertical_gradient(BG_TOP, BG_BOTTOM)
     img = draw_columns(img, rng)
     img = lighting(img)
+    if preview:
+        img = preview_band(img)
     img = Image.alpha_composite(img, rim(mask))
     img.putalpha(mask)
 
@@ -317,11 +347,15 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--no-icns", action="store_true")
     ap.add_argument("--preview", action="store_true", help="also write a strip of small sizes")
+    ap.add_argument("--variant", choices=["stable", "preview"], default="stable",
+                    help="preview: the branch-build icon with a PREVIEW band (-Preview file names)")
     args = ap.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    master = render(args.seed)
-    png = args.out_dir / "icon_1024.png"
+    preview_variant = args.variant == "preview"
+    suffix = "-Preview" if preview_variant else ""
+    master = render(args.seed, preview_variant)
+    png = args.out_dir / f"icon_1024{suffix.lower()}.png"
     master.save(png, optimize=True)
     print(f"wrote {png}")
     if args.preview:
@@ -334,8 +368,8 @@ def main() -> None:
             x += s + 20
         strip.save(args.out_dir / "preview_sizes.png")
     if not args.no_icns:
-        build_icns(master, args.out_dir / "AppIcon.icns")
-    build_ico(master, args.out_dir / "Parquetry.ico")
+        build_icns(master, args.out_dir / f"AppIcon{suffix}.icns")
+    build_ico(master, args.out_dir / f"Parquetry{suffix}.ico")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ mod settings;
 mod sql_panel;
 mod theme;
 mod updater;
+mod variant;
 mod workspace;
 
 #[cfg(test)]
@@ -46,7 +47,7 @@ fn main() {
     }
 
     let settings = Settings::load();
-    let mut paths = EnginePaths::default_for_app();
+    let mut paths = EnginePaths::default_for_app(variant::APP_NAME);
     paths.bundled_extensions = bundled_extensions_dir();
     let engine = match Engine::new(paths, settings.engine.clone()) {
         Ok(engine) => engine,
@@ -179,9 +180,10 @@ fn zoom(cx: &mut App, delta: f32) {
     AppState::update_settings(cx, |s| s.font_size = (s.font_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
 }
 
-/// `parquetry://open?url=…`, `file:///…` or a plain path → a location to open.
+/// `parquetry://open?url=…` (`parquetry-preview://` for the preview), `file:///…`
+/// or a plain path → a location to open.
 fn location_from_url(url: &str) -> Option<String> {
-    if let Some(rest) = url.strip_prefix("parquetry://") {
+    if let Some(rest) = url.strip_prefix("parquetry://").or_else(|| url.strip_prefix("parquetry-preview://")) {
         let query = rest.split_once('?').map(|(_, q)| q).unwrap_or("");
         for pair in query.split('&') {
             if let Some(value) = pair.strip_prefix("url=") {
@@ -294,6 +296,7 @@ mod tests {
         );
         assert_eq!(location_from_url("file:///Users/me/dir/").as_deref(), Some("/Users/me/dir"));
         assert_eq!(location_from_url("parquetry://open").as_deref(), None);
+        assert_eq!(location_from_url("parquetry-preview://open?url=s3%3A%2F%2Fb%2Fk").as_deref(), Some("s3://b/k"));
         assert_eq!(location_from_url("s3://b/k").as_deref(), Some("s3://b/k"));
         assert_eq!(location_from_url("file:///C:/data/My%20File.parquet").as_deref(), Some("C:/data/My File.parquet"));
         assert_eq!(location_from_url(r"C:\data\x.parquet").as_deref(), Some(r"C:\data\x.parquet"));

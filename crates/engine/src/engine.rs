@@ -129,11 +129,12 @@ pub struct EnginePaths {
 }
 
 impl EnginePaths {
-    /// Default locations under `~/Library/Caches/Parquetry`.
-    pub fn default_for_app() -> Self {
+    /// Default locations under the user's cache folder, e.g.
+    /// `~/Library/Caches/<app_name>`.
+    pub fn default_for_app(app_name: &str) -> Self {
         let base = dirs::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("Parquetry");
+            .join(app_name);
         Self {
             temp_dir: base.join("spill").join(std::process::id().to_string()),
             extension_dir: base.join("duckdb_extensions"),

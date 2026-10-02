@@ -16,10 +16,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$ROOT/$TARGET_DIR" ;; esac
 DIST="$TARGET_DIR/dist"
-APP="$DIST/Parquetry.app"
+# PARQUETRY_VARIANT=preview packages "Parquetry Preview.app" as Parquetry-Preview-<v>.*
+case "${PARQUETRY_VARIANT:-stable}" in
+preview) APP_NAME="Parquetry Preview" FILE_BASE="Parquetry-Preview" ;;
+*) APP_NAME="Parquetry" FILE_BASE="Parquetry" ;;
+esac
+APP="$DIST/$APP_NAME.app"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 FORMATS="${PACKAGE_FORMATS:-zip dmg}"
-VOLNAME="Parquetry"
+VOLNAME="$APP_NAME"
 
 if [ -t 2 ]; then C_B=$'\033[1;34m' C_R=$'\033[1;31m' C_0=$'\033[0m'; else C_B="" C_R="" C_0=""; fi
 log() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*" >&2; }
@@ -29,8 +34,8 @@ die() { printf '%serror:%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
 codesign --verify --deep --strict "$APP" || die "$APP has an invalid signature; re-run scripts/bundle.sh"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-ZIP="$DIST/Parquetry-$VERSION.zip"
-DMG="$DIST/Parquetry-$VERSION.dmg"
+ZIP="$DIST/$FILE_BASE-$VERSION.zip"
+DMG="$DIST/$FILE_BASE-$VERSION.dmg"
 OUTPUTS=()
 
 for fmt in $FORMATS; do
@@ -46,7 +51,7 @@ for fmt in $FORMATS; do
 			log "Creating $DMG"
 			STAGE="$(mktemp -d "${TMPDIR:-/tmp}/parquetry-dmg.XXXXXX")"
 			trap 'rm -rf "$STAGE"' EXIT
-			ditto "$APP" "$STAGE/Parquetry.app"
+			ditto "$APP" "$STAGE/$APP_NAME.app"
 			ln -s /Applications "$STAGE/Applications"
 			rm -f "$DMG"
 			hdiutil create -quiet -volname "$VOLNAME" -srcfolder "$STAGE" -fs HFS+ \

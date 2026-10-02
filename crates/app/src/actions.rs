@@ -141,13 +141,13 @@ pub fn set_menus(cx: &mut App) {
     }
     // macOS has an application menu; elsewhere its items move to File and Help.
     let mac = cfg!(target_os = "macos");
-    let app_menu = Menu::new("Parquetry").items([
-        MenuItem::action("About Parquetry", About),
+    let app_menu = Menu::new(crate::variant::APP_NAME).items([
+        MenuItem::action(format!("About {}", crate::variant::APP_NAME), About),
         MenuItem::action("Check for Updates…", CheckForUpdates).disabled(!crate::updater::is_available()),
         MenuItem::separator(),
         MenuItem::action("Settings…", OpenSettings),
         MenuItem::separator(),
-        MenuItem::action("Quit Parquetry", Quit),
+        MenuItem::action(format!("Quit {}", crate::variant::APP_NAME), Quit),
     ]);
     let mut file_items = vec![
         MenuItem::action("New Window", NewWindow),
@@ -183,7 +183,7 @@ pub fn set_menus(cx: &mut App) {
             help_items.push(MenuItem::action("Check for Updates…", CheckForUpdates));
         }
         help_items.push(MenuItem::separator());
-        help_items.push(MenuItem::action("About Parquetry", About));
+        help_items.push(MenuItem::action(format!("About {}", crate::variant::APP_NAME), About));
     }
     let mut menus = Vec::new();
     if mac {

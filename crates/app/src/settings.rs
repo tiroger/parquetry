@@ -106,7 +106,7 @@ impl Settings {
         dirs::config_dir()
             .or_else(dirs::home_dir)
             .unwrap_or_else(std::env::temp_dir)
-            .join("Parquetry")
+            .join(crate::variant::APP_NAME)
     }
 
     pub fn path() -> PathBuf {
