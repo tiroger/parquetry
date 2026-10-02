@@ -141,6 +141,31 @@ fn register_global_actions(cx: &mut App) {
     cx.on_action(|_: &UseSystemAppearance, cx| AppState::update_settings(cx, |s| s.appearance = settings::Appearance::System));
     cx.on_action(|_: &UseNavyOakTheme, cx| AppState::update_settings(cx, |s| s.dark_theme = settings::DarkTheme::NavyOak));
     cx.on_action(|_: &UseSlateTheme, cx| AppState::update_settings(cx, |s| s.dark_theme = settings::DarkTheme::Slate));
+    cx.on_action(|_: &OpenNotebook, cx| {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open Notebook".into()),
+        });
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let Some(path) = picked.await.ok().and_then(|r| r.ok()).flatten().and_then(|p| p.into_iter().next()) else {
+                return;
+            };
+            cx.update(|cx| open_notebook(path, cx));
+        })
+        .detach();
+    });
+    cx.on_action(|action: &OpenRecentNotebook, cx| {
+        let recent = AppState::settings(cx).existing_recent_notebooks();
+        if let Some(path) = recent.get(action.0) {
+            open_notebook(PathBuf::from(path), cx);
+        }
+    });
+    cx.on_action(|_: &ClearRecentNotebooks, cx| {
+        AppState::update_settings(cx, |s| s.recent_notebooks.clear());
+        actions::set_menus(cx);
+    });
     cx.on_action(|_: &ClearRecents, cx| {
         AppState::update_settings(cx, |s| s.recents.clear());
         actions::set_menus(cx);
@@ -168,6 +193,16 @@ fn register_global_actions(cx: &mut App) {
         ShowData, ShowColumns, ShowMetadata, ShowSql, ToggleInspector, ToggleSummaries, ExactSummaries,
         ShowShortcuts, ShowHelp,
     );
+}
+
+fn open_notebook(path: PathBuf, cx: &mut App) {
+    if path.extension().and_then(|e| e.to_str()) != Some("py") {
+        notebook::notify_error(cx, "Not a notebook", "marimo notebooks are .py files.");
+        return;
+    }
+    if let Err(error) = notebook::show_notebook(path, cx) {
+        notebook::notify_error(cx, "Couldn’t open the notebook", &format!("{error:#}"));
+    }
 }
 
 /// Global handlers only run when no element in a window handled the action: either

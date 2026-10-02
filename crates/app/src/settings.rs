@@ -120,6 +120,8 @@ pub struct Settings {
     pub notebook_library: NotebookLibrary,
     pub notebooks_dir: Option<String>,
     pub notebook_target: NotebookTarget,
+    /// Notebooks created or opened, most recent first.
+    pub recent_notebooks: Vec<String>,
     pub recents: Vec<RecentItem>,
     pub sql_history: Vec<String>,
 }
@@ -136,6 +138,7 @@ impl Default for Settings {
             notebook_library: NotebookLibrary::Polars,
             notebooks_dir: None,
             notebook_target: NotebookTarget::Window,
+            recent_notebooks: Vec::new(),
             recents: Vec::new(),
             sql_history: Vec::new(),
         }
@@ -146,6 +149,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 pub const MIN_FONT_SIZE: f32 = 10.0;
 pub const MAX_FONT_SIZE: f32 = 26.0;
 const MAX_RECENTS: usize = 20;
+const MAX_RECENT_NOTEBOOKS: usize = 12;
 const MAX_HISTORY: usize = 200;
 
 impl Settings {
@@ -220,6 +224,17 @@ impl Settings {
         self.recents.truncate(MAX_RECENTS);
     }
 
+    pub fn add_recent_notebook(&mut self, path: &str) {
+        self.recent_notebooks.retain(|p| p != path);
+        self.recent_notebooks.insert(0, path.to_string());
+        self.recent_notebooks.truncate(MAX_RECENT_NOTEBOOKS);
+    }
+
+    /// Recent notebooks that still exist, as shown in File ▸ Recent Notebooks.
+    pub fn existing_recent_notebooks(&self) -> Vec<String> {
+        self.recent_notebooks.iter().filter(|p| std::path::Path::new(p).is_file()).cloned().collect()
+    }
+
     pub fn remove_recent(&mut self, location: &str) {
         self.recents.retain(|r| r.location != location);
     }
@@ -266,6 +281,25 @@ mod tests {
         let loaded = Settings::load_from(&path);
         assert_eq!(loaded.font_size, MAX_FONT_SIZE);
         assert!(loaded.show_summaries);
+    }
+
+    #[test]
+    fn recent_notebooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |n: usize| dir.path().join(format!("n{n}.py")).to_string_lossy().into_owned();
+        let mut settings = Settings::default();
+        for n in 0..20 {
+            std::fs::write(path(n), "").unwrap();
+            settings.add_recent_notebook(&path(n));
+        }
+        settings.add_recent_notebook(&path(5));
+        assert_eq!(settings.recent_notebooks.len(), MAX_RECENT_NOTEBOOKS);
+        assert_eq!(settings.recent_notebooks[0], path(5), "most recent first, no duplicates");
+        assert_eq!(settings.recent_notebooks.iter().filter(|p| **p == path(5)).count(), 1);
+        std::fs::remove_file(path(19)).unwrap();
+        let shown = settings.existing_recent_notebooks();
+        assert!(!shown.contains(&path(19)), "deleted notebooks aren't offered");
+        assert_eq!(shown.len(), MAX_RECENT_NOTEBOOKS - 1);
     }
 
     #[test]

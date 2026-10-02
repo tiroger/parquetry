@@ -222,6 +222,47 @@ pub fn open_in_browser(notebook: &Path, log_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Open a saved notebook where Settings say (a Parquetry window or the browser),
+/// and remember it in File ▸ Recent Notebooks.
+pub fn show_notebook(path: PathBuf, cx: &mut gpui_kit::App) -> Result<()> {
+    use crate::app_state::AppState;
+    if find_uv().is_none() {
+        return Err(anyhow!("Notebooks open with uv. Install it from https://docs.astral.sh/uv/ and try again."));
+    }
+    let target = AppState::settings(cx).notebook_target;
+    AppState::update_settings(cx, |s| s.add_recent_notebook(&path.to_string_lossy()));
+    crate::actions::set_menus(cx);
+    #[cfg(any(target_os = "macos", windows))]
+    if target == crate::settings::NotebookTarget::Window {
+        crate::notebook_window::open(path, cx);
+        return Ok(());
+    }
+    let _ = target;
+    open_in_browser(&path, &crate::settings::Settings::directory())?;
+    notify(
+        cx,
+        gpui_kit::component::notification::Notification::info(format!(
+            "{} — the first run downloads packages, then marimo opens in your browser.",
+            path.display()
+        ))
+        .title("Opening in marimo"),
+    );
+    Ok(())
+}
+
+/// Show a notification in the front Parquetry window, if any.
+pub fn notify(cx: &mut gpui_kit::App, notification: gpui_kit::component::notification::Notification) {
+    use gpui_kit::component::WindowExt as _;
+    let front = cx.active_window().or_else(|| cx.try_global::<crate::workspace::Workspaces>()?.0.first().map(|(h, _)| *h));
+    if let Some(handle) = front {
+        let _ = handle.update(cx, |_, window, cx| window.push_notification(notification, cx));
+    }
+}
+
+pub fn notify_error(cx: &mut gpui_kit::App, title: &str, message: &str) {
+    notify(cx, gpui_kit::component::notification::Notification::error(message.to_string()).title(title.to_string()));
+}
+
 /// A marimo server run by Parquetry (for the notebook window): headless, stopped
 /// with the window or when Parquetry quits.
 pub struct MarimoServer {

@@ -28,6 +28,8 @@ gpui_kit::actions!(
         GoToColumn,
         ShowValueCounts,
         OpenInMarimo,
+        OpenNotebook,
+        ClearRecentNotebooks,
         CopyAsSql,
         CopyAsPolars,
         CopyAsPandas,
@@ -54,6 +56,11 @@ gpui_kit::actions!(
         ClearRecents,
     ]
 );
+
+/// Open a recent notebook (index into the existing recent notebooks).
+#[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
+#[action(namespace = parquetry, no_json)]
+pub struct OpenRecentNotebook(pub usize);
 
 /// Open a recent location (index into the recents list).
 #[derive(Clone, PartialEq, Debug, gpui_kit::Action)]
@@ -144,6 +151,17 @@ pub fn set_menus(cx: &mut App) {
         recent_items.push(MenuItem::separator());
         recent_items.push(MenuItem::action("Clear Menu", ClearRecents));
     }
+    let mut notebook_items: Vec<MenuItem> = AppState::settings(cx)
+        .existing_recent_notebooks()
+        .iter()
+        .take(12)
+        .enumerate()
+        .map(|(ix, path)| MenuItem::action(crate::format::display_path(path), OpenRecentNotebook(ix)))
+        .collect();
+    if !notebook_items.is_empty() {
+        notebook_items.push(MenuItem::separator());
+        notebook_items.push(MenuItem::action("Clear Menu", ClearRecentNotebooks));
+    }
     // macOS has an application menu; elsewhere its items move to File and Help.
     let mac = cfg!(target_os = "macos");
     let app_menu = Menu::new(crate::variant::APP_NAME).items([
@@ -166,6 +184,8 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::separator(),
         MenuItem::action("Export…", Export),
         MenuItem::action("Open in marimo", OpenInMarimo),
+        MenuItem::action("Open Notebook…", OpenNotebook),
+        MenuItem::submenu(Menu::new("Recent Notebooks").items(notebook_items)),
         MenuItem::action("Compare…", Compare),
         MenuItem::action("Reload", Reload),
         MenuItem::separator(),

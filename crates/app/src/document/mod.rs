@@ -419,7 +419,6 @@ impl DatasetDocument {
             .filter(|d| !d.trim().is_empty())
             .map(|d| std::path::PathBuf::from(parquetry_engine::expand_home_path(d)))
             .unwrap_or_else(crate::notebook::default_notebooks_dir);
-        let log_dir = crate::settings::Settings::directory();
         let file = crate::notebook::notebook_file_name(&self.title);
         let path = match crate::notebook::write_notebook(&dir, &file, &notebook) {
             Ok(path) => path,
@@ -428,27 +427,12 @@ impl DatasetDocument {
                 return;
             }
         };
-        if crate::notebook::find_uv().is_none() {
-            window.push_notification(
-                Notification::error("Notebooks open with uv. Install it from https://docs.astral.sh/uv/ and try again.").title("uv isn’t installed"),
-                cx,
-            );
-            return;
-        }
-        #[cfg(any(target_os = "macos", windows))]
-        if settings.notebook_target == crate::settings::NotebookTarget::Window {
-            // Its own window; opened after this update (it builds views of its own).
-            cx.defer(move |cx| crate::notebook_window::open(path, cx));
-            return;
-        }
-        match crate::notebook::open_in_browser(&path, &log_dir) {
-            Ok(()) => window.push_notification(
-                Notification::info(format!("{} — the first run downloads packages, then marimo opens in your browser.", path.display()))
-                    .title("Opening in marimo"),
-                cx,
-            ),
-            Err(error) => window.push_notification(Notification::error(format!("{error:#}")).title("Couldn’t open marimo"), cx),
-        }
+        // Opened after this update (a notebook window builds views of its own).
+        cx.defer(move |cx| {
+            if let Err(error) = crate::notebook::show_notebook(path, cx) {
+                crate::notebook::notify_error(cx, "Couldn’t open the notebook", &format!("{error:#}"));
+            }
+        });
     }
 
     /// Total the selected cells in the background (after a short pause, so dragging
