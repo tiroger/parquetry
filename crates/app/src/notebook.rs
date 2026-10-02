@@ -255,7 +255,12 @@ impl MarimoServer {
                     if let Some(url) = served_url(&line)
                         && let Some(tx) = tx.lock().unwrap_or_else(|e| e.into_inner()).take()
                     {
-                        let _ = tx.send(Ok(url));
+                        // marimo prints the URL just before it starts accepting
+                        // connections; wait for the port so the page loads first time.
+                        std::thread::spawn(move || {
+                            wait_for_port(&url, std::time::Duration::from_secs(20));
+                            let _ = tx.send(Ok(url));
+                        });
                     }
                 }
             });
@@ -310,6 +315,18 @@ fn stop_process(pid: u32) {
     };
     let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
     RUNNING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| *p != pid);
+}
+
+/// Wait until the server in `url` accepts connections (or `limit` passes).
+fn wait_for_port(url: &str, limit: std::time::Duration) {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', '#']).next().unwrap_or("").to_string();
+    let started = std::time::Instant::now();
+    while started.elapsed() < limit {
+        if std::net::TcpStream::connect(host.as_str()).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// The page URL in a marimo output line: `➜  URL: http://localhost:2718?access_token=…`.
