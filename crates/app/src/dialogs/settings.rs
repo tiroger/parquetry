@@ -10,7 +10,7 @@ use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
 
 use crate::app_state::AppState;
-use crate::settings::{Appearance, DarkTheme, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
+use crate::settings::{Appearance, DarkTheme, NotebookLibrary, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, Settings};
 
 /// Profile names from `~/.aws/config` and `~/.aws/credentials`.
 pub fn aws_profiles() -> Vec<String> {
@@ -59,6 +59,8 @@ pub struct SettingsForm {
     profiles: Vec<String>,
     region: Entity<InputState>,
     endpoint: Entity<InputState>,
+    notebook_library: Entity<SelectState<Vec<SharedString>>>,
+    notebooks_dir: Entity<InputState>,
     path_style: bool,
     anonymous: bool,
     memory: Entity<InputState>,
@@ -116,6 +118,21 @@ impl SettingsForm {
             profiles,
             region: input(s3.region.clone().unwrap_or_default(), "Auto-detected per bucket (fallback us-east-1)", window, cx),
             endpoint: input(s3.endpoint.clone().unwrap_or_default(), "AWS (leave empty); e.g. http://localhost:9000 for MinIO", window, cx),
+            notebook_library: cx.new(|cx| {
+                let ix = NotebookLibrary::all().iter().position(|l| *l == settings.notebook_library).unwrap_or(0);
+                SelectState::new(
+                    NotebookLibrary::all().iter().map(|l| SharedString::from(l.label())).collect::<Vec<_>>(),
+                    Some(IndexPath::new(ix)),
+                    window,
+                    cx,
+                )
+            }),
+            notebooks_dir: input(
+                settings.notebooks_dir.clone().unwrap_or_default(),
+                &crate::format::display_path(&crate::notebook::default_notebooks_dir().to_string_lossy()),
+                window,
+                cx,
+            ),
             path_style: s3.path_style,
             anonymous: s3.anonymous,
             memory: input(settings.engine.memory_limit.clone().unwrap_or_default(), "Automatic (80% of RAM), e.g. 16GB", window, cx),
@@ -144,6 +161,9 @@ impl SettingsForm {
         };
         settings.engine.s3.region = text(&self.region);
         settings.engine.s3.endpoint = text(&self.endpoint);
+        let library_ix = self.notebook_library.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
+        settings.notebook_library = NotebookLibrary::all()[library_ix.min(NotebookLibrary::all().len() - 1)];
+        settings.notebooks_dir = text(&self.notebooks_dir);
         settings.engine.s3.path_style = self.path_style;
         settings.engine.s3.anonymous = self.anonymous;
         settings.engine.memory_limit = text(&self.memory);
@@ -291,6 +311,14 @@ impl Render for SettingsForm {
                     ))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                         "Profiles come from ~/.aws/config. For SSO profiles, run `aws sso login --profile NAME` first.",
+                    )),
+            )
+            .child(
+                section("Notebooks", cx)
+                    .child(row("Open in marimo with", Select::new(&self.notebook_library).small(), cx))
+                    .child(row("Save notebooks in", Input::new(&self.notebooks_dir).small(), cx))
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                        "Notebooks open with uv (docs.astral.sh/uv), which installs marimo and the libraries they need on first use.",
                     )),
             )
             .child(

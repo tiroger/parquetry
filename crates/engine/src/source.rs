@@ -377,7 +377,7 @@ fn duckdb_glob(conn: &Connection, pattern: &str) -> Result<Vec<String>> {
     Ok(files)
 }
 
-pub(crate) fn expand_home(location: &str) -> String {
+pub fn expand_home(location: &str) -> String {
     if let Some(rest) = location.strip_prefix("~/")
         && let Some(home) = dirs::home_dir() {
             return home.join(rest).to_string_lossy().into_owned();

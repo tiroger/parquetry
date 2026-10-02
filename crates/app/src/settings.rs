@@ -27,6 +27,27 @@ impl Appearance {
     }
 }
 
+/// The dataframe library notebooks are written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NotebookLibrary {
+    #[default]
+    Polars,
+    Pandas,
+}
+
+impl NotebookLibrary {
+    pub fn label(self) -> &'static str {
+        match self {
+            NotebookLibrary::Polars => "Polars",
+            NotebookLibrary::Pandas => "pandas",
+        }
+    }
+
+    pub fn all() -> [NotebookLibrary; 2] {
+        [NotebookLibrary::Polars, NotebookLibrary::Pandas]
+    }
+}
+
 /// The palette used in dark mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DarkTheme {
@@ -72,6 +93,10 @@ pub struct Settings {
     pub show_summaries: bool,
     /// Reopen the windows and tabs of the last session at launch.
     pub reopen_last_session: bool,
+    /// Open in marimo: the dataframe library, and where notebooks are saved
+    /// (`None`: ~/Documents/Parquetry Notebooks).
+    pub notebook_library: NotebookLibrary,
+    pub notebooks_dir: Option<String>,
     pub recents: Vec<RecentItem>,
     pub sql_history: Vec<String>,
 }
@@ -85,6 +110,8 @@ impl Default for Settings {
             font_size: DEFAULT_FONT_SIZE,
             show_summaries: true,
             reopen_last_session: true,
+            notebook_library: NotebookLibrary::Polars,
+            notebooks_dir: None,
             recents: Vec::new(),
             sql_history: Vec::new(),
         }

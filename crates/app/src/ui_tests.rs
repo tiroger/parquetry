@@ -555,3 +555,34 @@ fn sessions_save_and_restore_tabs_views_and_layout(cx: &mut TestAppContext) {
         assert!(doc3.read(cx).grid.read(cx).is_pinned(2));
     });
 }
+
+#[gpui_kit::test]
+fn copy_view_as_code(cx: &mut TestAppContext) {
+    let (handle, ws) = setup(cx);
+    open(cx, handle, &ws, &env().data);
+    let doc = cx.read(|cx| ws.read(cx).document(0).unwrap());
+    let grid = cx.read(|cx| doc.read(cx).grid.clone());
+    cx.update_window(handle, |_, window, cx| {
+        doc.update(cx, |d, cx| d.add_filter(Filter::new("region", FilterOp::Equals, "eu"), window, cx));
+    })
+    .unwrap();
+    wait_until(cx, handle, "filter", |cx| cx.read(|cx| grid.read(cx).row_count() == 6_667 && !doc.read(cx).is_busy()));
+    // Hide a column: the code selects the shown ones.
+    cx.update(|cx| grid.update(cx, |g, cx| g.set_hidden(3, true, cx)));
+    let clipboard = |cx: &mut TestAppContext| cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+
+    dispatch(cx, handle, Box::new(CopyAsPolars));
+    let polars = clipboard(cx);
+    assert!(polars.contains("import polars as pl"), "{polars}");
+    assert!(polars.contains(r#".filter(pl.col("region") == "eu")"#), "{polars}");
+    assert!(polars.contains(r#".select(["id", "region", "amount", "ts"])"#), "{polars}");
+
+    dispatch(cx, handle, Box::new(CopyAsSql));
+    let sql = clipboard(cx);
+    assert!(sql.starts_with("SELECT \"id\", \"region\", \"amount\", \"ts\"\nFROM read_parquet("), "{sql}");
+    assert!(sql.contains("WHERE \"region\" = 'eu'"), "{sql}");
+
+    dispatch(cx, handle, Box::new(CopyAsPandas));
+    assert!(clipboard(cx).contains(".df()"));
+    assert!(focus_in_workspace(cx, handle, &ws));
+}

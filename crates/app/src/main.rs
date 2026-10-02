@@ -12,6 +12,7 @@ mod format;
 // Used off macOS only; compiled everywhere so its tests run on every platform.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod instance;
+mod notebook;
 mod session;
 mod settings;
 mod sql_panel;
@@ -155,7 +156,7 @@ fn register_global_actions(cx: &mut App) {
         )*};
     }
     to_front!(
-        CloseTab, NextTab, PreviousTab, Reload, Compare, Export, Find, GoToRow, GoToColumn, ShowValueCounts, AddFilter, ClearFilters,
+        CloseTab, NextTab, PreviousTab, Reload, Compare, Export, Find, GoToRow, GoToColumn, ShowValueCounts, OpenInMarimo, CopyAsSql, CopyAsPolars, CopyAsPandas, AddFilter, ClearFilters,
         ShowData, ShowColumns, ShowMetadata, ShowSql, ToggleInspector, ToggleSummaries, ExactSummaries,
         ShowShortcuts, ShowHelp,
     );

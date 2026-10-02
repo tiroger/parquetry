@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +12,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
+  # Generated notebooks and code run in real Python through uv.
+  PARQUETRY_REQUIRE_PYTHON_TESTS: "1"
 
 jobs:
   rust:
@@ -26,6 +27,8 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - uses: astral-sh/setup-uv@v6
 
       - name: cargo test
         run: cargo test --workspace --locked
@@ -48,6 +51,8 @@ jobs:
         with:
           # The first MSVC build takes ~55 min; keep it even if a test fails.
           cache-on-failure: true
+
+      - uses: astral-sh/setup-uv@v6
 
       - name: cargo test
         run: cargo test --workspace --locked --no-fail-fast

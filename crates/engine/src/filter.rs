@@ -168,6 +168,9 @@ impl Filter {
         let typed = |value: &str| -> String {
             if column.kind.is_nested() || matches!(column.kind, ColumnKind::Other | ColumnKind::Binary) {
                 literal(value)
+            } else if column.sql_type.eq_ignore_ascii_case("VARCHAR") {
+                // Already text; keeps generated code readable.
+                literal(value.trim())
             } else {
                 format!("CAST({} AS {})", literal(value.trim()), column.sql_type)
             }

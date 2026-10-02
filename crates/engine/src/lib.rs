@@ -1,6 +1,7 @@
 //! Parquetry's data engine: DuckDB-backed reading, paging, statistics and SQL for
 //! Parquet and friends, with no UI dependencies.
 
+mod codegen;
 mod dataset;
 mod diff;
 mod engine;
@@ -16,6 +17,7 @@ mod stats;
 mod types;
 mod view;
 
+pub use codegen::{CodeFlavor, CodeOptions, python_packages, view_code};
 pub use dataset::{Dataset, DatasetOrigin, FileEntry, ParquetSummary};
 pub use diff::{ColumnChanges, CompareOptions, Comparison, TypeChange, compare};
 pub use engine::{Canceller, Engine, EnginePaths, EngineSettings, Job, Lane, S3Settings};
@@ -25,7 +27,7 @@ pub use filter::{Filter, FilterOp, SortKey, ViewSpec};
 pub use metadata::{MetadataTable, metadata_table};
 pub use query::{QueryOutcome, SqlTable, run_sql, split_statements, table_name_for};
 pub use s3::{S3Entry, S3Url, is_remote};
-pub use source::{Format, SourceSpec, format_from_extension};
+pub use source::{Format, SourceSpec, expand_home as expand_home_path, format_from_extension};
 pub use stats::{
     ChartKind, ColumnSummary, HistogramBin, StatsMode, TopValue, ValueCounts, format_epoch_micros,
     format_number, summarize, value_counts,

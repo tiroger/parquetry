@@ -21,7 +21,7 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::Selectable as _;
 use gpui_kit::*;
 use parquetry_engine::{
-    Canceller, ColumnKind, CopyFormat, Dataset, Filter, FilterOp, SelectionStats, SortKey, StatsMode, View, ViewSpec,
+    Canceller, CodeFlavor, CodeOptions, ColumnKind, CopyFormat, Dataset, Filter, FilterOp, SelectionStats, SortKey, StatsMode, View, ViewSpec, python_packages, view_code,
 };
 use parquetry_grid::{Grid, GridEvent, GridState, Hit, Selection, SummaryState};
 
@@ -352,6 +352,83 @@ impl DatasetDocument {
         spec.filters.retain(|f| f != &filter);
         spec.filters.push(filter);
         self.apply_spec(spec, window, cx);
+    }
+
+    // ------------------------------------------------------------ code and notebooks
+
+    /// How the view's code should look: the shown columns (when they differ from
+    /// the file's), and the S3 profile to name.
+    fn code_options(&self, cx: &App) -> CodeOptions {
+        let grid = self.grid.read(cx);
+        let display = grid.display_columns();
+        let natural = display.len() == self.dataset.columns.len() && display.iter().enumerate().all(|(i, c)| i == *c);
+        let columns = if natural {
+            Vec::new()
+        } else {
+            display.iter().filter_map(|&c| self.dataset.columns.get(c)).map(|c| c.name.clone()).collect()
+        };
+        let s3 = &AppState::settings(cx).engine.s3;
+        CodeOptions { columns, aws_profile: s3.profile.clone(), aws_region: s3.region.clone(), preview_rows: None }
+    }
+
+    /// Put the view on the clipboard as SQL, Polars or pandas code.
+    fn copy_code(&mut self, flavor: CodeFlavor, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::notification::Notification;
+        match view_code(&self.dataset, &self.spec, flavor, &self.code_options(cx)) {
+            Ok(code) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(code));
+                window.push_notification(Notification::success(format!("Copied the view as {}", flavor.label())), cx);
+            }
+            Err(error) => {
+                window.push_notification(Notification::error(error.to_string()).title("Couldn’t write code for this view"), cx);
+            }
+        }
+    }
+
+    /// Write the view as a marimo notebook and open it.
+    fn open_in_marimo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::notification::Notification;
+        let settings = AppState::settings(cx).clone();
+        let flavor = match settings.notebook_library {
+            crate::settings::NotebookLibrary::Polars => CodeFlavor::Polars,
+            crate::settings::NotebookLibrary::Pandas => CodeFlavor::Pandas,
+        };
+        let rows = self.grid.read(cx).row_count();
+        // Big views stay lazy; `df` gets the first rows.
+        let options = CodeOptions { preview_rows: (rows > 1_000_000).then_some(100_000), ..self.code_options(cx) };
+        let code = match view_code(&self.dataset, &self.spec, flavor, &options) {
+            Ok(code) => code,
+            Err(error) => {
+                window.push_notification(Notification::error(error.to_string()).title("Couldn’t write a notebook for this view"), cx);
+                return;
+            }
+        };
+        let mut summary = format::plural(rows, "row", "rows");
+        if rows != self.dataset.row_count {
+            summary.push_str(&format!(" of {}", format::count(self.dataset.row_count)));
+        }
+        let described: Vec<String> = self.spec.filters.iter().map(|f| f.describe()).collect();
+        if !described.is_empty() {
+            summary.push_str(&format!(" · {}", described.join(" · ")));
+        }
+        let packages = python_packages(&code);
+        let notebook = crate::notebook::marimo_notebook(&self.title, &summary, &code, &packages);
+        let dir = settings
+            .notebooks_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+            .map(|d| std::path::PathBuf::from(parquetry_engine::expand_home_path(d)))
+            .unwrap_or_else(crate::notebook::default_notebooks_dir);
+        let log_dir = crate::settings::Settings::directory();
+        let file = crate::notebook::notebook_file_name(&self.title);
+        match crate::notebook::open_in_marimo(&dir, &file, &notebook, &log_dir) {
+            Ok(path) => window.push_notification(
+                Notification::info(format!("{} — the first run downloads packages, then marimo opens in your browser.", path.display()))
+                    .title("Opening in marimo"),
+                cx,
+            ),
+            Err(error) => window.push_notification(Notification::error(error.to_string()).title("Couldn’t open marimo"), cx),
+        }
     }
 
     /// Total the selected cells in the background (after a short pause, so dragging
@@ -909,6 +986,21 @@ impl DatasetDocument {
                     .on_click(cx.listener(|this, _, window, cx| this.open_filter_dialog(None, window, cx))),
             )
             .child(
+                Button::new("open-in")
+                    .icon(Icon::new(Lucide::NotebookPen))
+                    .label("Open in…")
+                    .small()
+                    .outline()
+                    .dropdown_menu(|menu, _, _| {
+                        menu.menu_with_icon("Open in marimo", Icon::new(Lucide::NotebookPen), Box::new(OpenInMarimo))
+                            .separator()
+                            .label("Copy view as code")
+                            .menu("SQL (DuckDB)", Box::new(CopyAsSql))
+                            .menu("Polars", Box::new(CopyAsPolars))
+                            .menu("pandas", Box::new(CopyAsPandas))
+                    }),
+            )
+            .child(
                 Button::new("export")
                     .icon(Icon::new(Lucide::Download))
                     .small()
@@ -1294,6 +1386,10 @@ impl Render for DatasetDocument {
             .on_action(cx.listener(|this, _: &ClearFilters, window, cx| this.clear_filters(window, cx)))
             .on_action(cx.listener(|this, _: &GoToRow, window, cx| this.open_goto_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &GoToColumn, window, cx| this.open_goto_column(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenInMarimo, window, cx| this.open_in_marimo(window, cx)))
+            .on_action(cx.listener(|this, _: &CopyAsSql, window, cx| this.copy_code(CodeFlavor::Sql, window, cx)))
+            .on_action(cx.listener(|this, _: &CopyAsPolars, window, cx| this.copy_code(CodeFlavor::Polars, window, cx)))
+            .on_action(cx.listener(|this, _: &CopyAsPandas, window, cx| this.copy_code(CodeFlavor::Pandas, window, cx)))
             .on_action(cx.listener(|this, _: &ShowValueCounts, window, cx| {
                 // The selected column, or the first one.
                 let grid = this.grid.read(cx);
