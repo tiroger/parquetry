@@ -574,98 +574,147 @@ impl Workspace {
 
     fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let recents = AppState::settings(cx).recents.clone();
+        let settings = AppState::settings(cx);
+        let recents = settings.recents.clone();
+        let notebooks = settings.existing_recent_notebooks();
+        let now = format::now_secs();
         let action_button = |id: &'static str, icon: Icon, label: &'static str, action: Box<dyn Action>| {
-            Button::new(id)
-                .icon(icon)
-                .label(label)
-                .outline()
-                .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+            Button::new(id).icon(icon).label(label).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
         };
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_6()
-            .p_8()
-            .child(
-                v_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(div().text_3xl().font_weight(FontWeight::BOLD).child(crate::variant::APP_NAME))
-                    .child(div().text_color(theme.muted_foreground).child("Open Parquet, CSV, JSON, Arrow, Delta Lake and Iceberg — on disk or in S3.")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .flex_wrap()
-                    .justify_center()
-                    .child(action_button("welcome-open", Icon::new(IconName::FolderOpen), "Open…", Box::new(OpenFile)))
-                    .child(action_button("welcome-folder", Icon::new(IconName::Folder), "Open Folder…", Box::new(OpenFolder)))
-                    .child(action_button("welcome-s3", Icon::new(Lucide::Cloud), "Open from S3…", Box::new(OpenS3)))
-                    .child(action_button("welcome-sql", Icon::new(Lucide::SquareTerminal), "SQL Console", Box::new(NewSqlConsole))),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child("Or drop files and folders anywhere in this window."),
-            )
-            .when(!recents.is_empty(), |this| {
-                this.child(
-                    v_flex()
-                        .w(rems(40.))
-                        .max_w_full()
-                        .gap_1()
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Recent"))
-                                .child(
-                                    Button::new("clear-recents")
-                                        .label("Clear")
-                                        .xsmall()
-                                        .ghost()
-                                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ClearRecents), cx)),
-                                ),
-                        )
-                        .children(recents.iter().take(12).enumerate().map(|(ix, recent)| {
-                            let remote = parquetry_engine::is_remote(&recent.location);
-                            let location = recent.location.clone();
-                            h_flex()
-                                .id(("recent", ix))
-                                .h(rems(2.))
-                                .px_2()
-                                .gap_2()
-                                .rounded(theme.radius)
-                                .hover(|s| s.bg(theme.secondary_hover))
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let mut spec = SourceSpec::new(location.clone());
-                                    if let Some(format) = AppState::settings(cx).recents.get(ix).and_then(|r| r.format) {
-                                        spec = spec.with_format(format);
-                                    }
-                                    this.open(spec, window, cx);
-                                }))
-                                .child(Icon::new(if remote { Lucide::Cloud } else { Lucide::Sheet }).small().text_color(theme.muted_foreground))
-                                .child(div().text_sm().child(SourceSpec::new(recent.location.clone()).display_name()))
-                                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(theme.muted_foreground).child(format::display_path(&recent.location)))
-                                .child({
-                                    let location = recent.location.clone();
-                                    Button::new(("remove-recent", ix))
-                                        .icon(Icon::new(Lucide::X))
-                                        .xsmall()
-                                        .ghost()
-                                        .tooltip("Remove from Recent")
-                                        .on_click(move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            AppState::update_settings(cx, |s| s.remove_recent(&location));
-                                            crate::actions::set_menus(cx);
-                                        })
-                                })
-                        })),
+        let card = |title: &'static str, button: Button| {
+            v_flex()
+                .flex_grow(1.)
+                .min_w_0()
+                .p_2()
+                .gap_0p5()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.secondary)
+                .child(
+                    h_flex()
+                        .h(rems(1.75))
+                        .pl_2()
+                        .justify_between()
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
+                        .child(button.xsmall().ghost()),
                 )
-            })
+        };
+        let hint = |text: String| div().px_2().py_1().text_xs().text_color(theme.muted_foreground).child(text);
+
+        let data = card(
+            "Recent",
+            Button::new("clear-recents")
+                .label("Clear")
+                .when(recents.is_empty(), |b| b.invisible())
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(ClearRecents), cx)),
+        )
+        .flex_basis(rems(26.))
+        .children(recents.iter().take(MAX_WELCOME_ROWS).enumerate().map(|(ix, recent)| {
+            let remote = parquetry_engine::is_remote(&recent.location);
+            let (folder, name) = format::split_location(&recent.location);
+            let kind = recent
+                .format
+                .or_else(|| parquetry_engine::format_from_extension(&recent.location))
+                .map(|f| f.label())
+                .unwrap_or(if remote { "S3" } else { "Folder" });
+            let open = recent.location.clone();
+            let remove = recent.location.clone();
+            welcome_row(
+                ("recent", ix).into(),
+                Icon::new(match kind {
+                    _ if remote => Lucide::Cloud,
+                    "Folder" => Lucide::Folder,
+                    _ => Lucide::Sheet,
+                })
+                .text_color(theme.muted_foreground),
+                name,
+                folder,
+                Some(kind),
+                format::ago(recent.opened_at, now),
+                &theme,
+                cx.listener(move |this, _, window, cx| {
+                    let mut spec = SourceSpec::new(open.clone());
+                    if let Some(format) = AppState::settings(cx).recents.get(ix).and_then(|r| r.format) {
+                        spec = spec.with_format(format);
+                    }
+                    this.open(spec, window, cx);
+                }),
+                move |cx| AppState::update_settings(cx, |s| s.remove_recent(&remove)),
+            )
+        }))
+        .when(recents.is_empty(), |this| this.child(hint("Files, folders and S3 locations you open show up here.".into())));
+
+        let notebook_card = card(
+            "Notebooks",
+            Button::new("open-notebook")
+                .label("Open…")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenNotebook), cx)),
+        )
+        .flex_basis(rems(18.))
+        .children(notebooks.iter().take(MAX_WELCOME_ROWS).enumerate().map(|(ix, path)| {
+            let file = std::path::Path::new(path);
+            let name = file.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+            let folder = file.parent().map(|p| format::display_path(&p.to_string_lossy())).unwrap_or_default();
+            let modified = std::fs::metadata(file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| format::ago(d.as_secs(), now))
+                .unwrap_or_default();
+            let remove = path.clone();
+            welcome_row(
+                ("recent-notebook", ix).into(),
+                Icon::new(Lucide::NotebookPen).text_color(theme.primary),
+                name,
+                folder,
+                None,
+                modified,
+                &theme,
+                move |_, window, cx| window.dispatch_action(Box::new(OpenRecentNotebook(ix)), cx),
+                move |cx| AppState::update_settings(cx, |s| s.recent_notebooks.retain(|p| *p != remove)),
+            )
+        }))
+        .when(notebooks.is_empty(), |this| {
+            this.child(hint(format!(
+                "Open in marimo ({}) turns any view into a notebook.",
+                crate::actions::key_label("secondary-shift-m")
+            )))
+        });
+
+        v_flex().size_full().items_center().justify_center().p_8().child(
+            v_flex()
+                .w(rems(60.))
+                .max_w_full()
+                .gap_6()
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .child(img(APP_ICON.clone()).size(rems(4.)).flex_none())
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(div().text_2xl().font_weight(FontWeight::BOLD).child(crate::variant::APP_NAME))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(theme.muted_foreground)
+                                        .child("Parquet, CSV, JSON, Arrow, Excel, Delta Lake and Iceberg, on disk or in S3. Drop files anywhere in this window."),
+                                ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(action_button("welcome-open", Icon::new(IconName::FolderOpen), "Open…", Box::new(OpenFile)).primary())
+                        .child(action_button("welcome-folder", Icon::new(IconName::Folder), "Open Folder…", Box::new(OpenFolder)).outline())
+                        .child(action_button("welcome-s3", Icon::new(Lucide::Cloud), "Open from S3…", Box::new(OpenS3)).outline())
+                        .child(action_button("welcome-sql", Icon::new(Lucide::SquareTerminal), "SQL Console", Box::new(NewSqlConsole)).outline()),
+                )
+                .child(h_flex().items_stretch().flex_wrap().gap_3().child(data).child(notebook_card)),
+        )
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -963,6 +1012,65 @@ pub fn open_in_front_window(specs: Vec<SourceSpec>, cx: &mut App) {
             open_window(specs, cx);
         }
     }
+}
+
+
+/// Rows per list on the start page.
+const MAX_WELCOME_ROWS: usize = 8;
+
+/// The app icon shown on the start page.
+static APP_ICON: std::sync::LazyLock<std::sync::Arc<Image>> = std::sync::LazyLock::new(|| {
+    let bytes: &[u8] = if crate::variant::PREVIEW {
+        include_bytes!("../../../assets/icon/icon_160-preview.png")
+    } else {
+        include_bytes!("../../../assets/icon/icon_160.png")
+    };
+    std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
+});
+
+/// A start page list row: icon, name, folder, optional kind, when, and a remove
+/// button.
+#[allow(clippy::too_many_arguments)]
+fn welcome_row(
+    id: ElementId,
+    icon: Icon,
+    name: String,
+    folder: String,
+    kind: Option<&'static str>,
+    when: String,
+    theme: &gpui_kit::component::Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_remove: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    let muted = theme.muted_foreground;
+    h_flex()
+        .id(id)
+        .h(rems(2.))
+        .px_2()
+        .gap_2()
+        .rounded(theme.radius)
+        .hover(|s| s.bg(theme.secondary_hover))
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(icon.small())
+        .child(div().flex_shrink_0().max_w(rems(16.)).truncate().text_sm().child(name))
+        .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(folder))
+        .when_some(kind, |this, kind| {
+            this.child(div().flex_none().px_1().rounded(theme.radius).bg(theme.muted).text_xs().text_color(muted).child(kind))
+        })
+        .child(div().flex_none().text_xs().text_color(muted).child(when))
+        .child(
+            Button::new("remove")
+                .icon(Icon::new(Lucide::X))
+                .xsmall()
+                .ghost()
+                .tooltip("Remove from list")
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    on_remove(cx);
+                    crate::actions::set_menus(cx);
+                }),
+        )
 }
 
 #[cfg(test)]

@@ -74,6 +74,30 @@ pub fn split_location(location: &str) -> (String, String) {
     }
 }
 
+/// How long ago `then` was, both in seconds since the Unix epoch: `just now`,
+/// `5 min ago`, `3 h ago`, `yesterday`, `4 days ago`, `2 weeks ago`, `5 months ago`.
+pub fn ago(then: u64, now: u64) -> String {
+    const MIN: u64 = 60;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    let elapsed = now.saturating_sub(then);
+    match elapsed {
+        e if e < MIN => "just now".into(),
+        e if e < HOUR => format!("{} min ago", e / MIN),
+        e if e < DAY => format!("{} h ago", e / HOUR),
+        e if e < 2 * DAY => "yesterday".into(),
+        e if e < 14 * DAY => format!("{} days ago", e / DAY),
+        e if e < 60 * DAY => format!("{} weeks ago", e / (7 * DAY)),
+        e if e < 365 * DAY => format!("{} months ago", e / (30 * DAY)),
+        e => plural(e / (365 * DAY), "year", "years") + " ago",
+    }
+}
+
+/// Seconds since the Unix epoch.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +120,15 @@ mod tests {
         assert_eq!(duration_ms(850), "850 ms");
         assert_eq!(duration_ms(2400), "2.4 s");
         assert_eq!(duration_ms(185_000), "3 min 5 s");
+        let now = 1_000_000_000;
+        assert_eq!(ago(now - 10, now), "just now");
+        assert_eq!(ago(now + 10, now), "just now", "clock skew");
+        assert_eq!(ago(now - 5 * 60, now), "5 min ago");
+        assert_eq!(ago(now - 3 * 3600, now), "3 h ago");
+        assert_eq!(ago(now - 30 * 3600, now), "yesterday");
+        assert_eq!(ago(now - 4 * 86_400, now), "4 days ago");
+        assert_eq!(ago(now - 20 * 86_400, now), "2 weeks ago");
+        assert_eq!(ago(now - 150 * 86_400, now), "5 months ago");
+        assert_eq!(ago(now - 800 * 86_400, now), "2 years ago");
     }
 }
