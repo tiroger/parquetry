@@ -11,7 +11,9 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, anyhow};
 
 /// The notebook text: a header cell, the data cell (`code`, defining `df`) and a
-/// cell showing `df`.
+/// cell showing `df`. The header's `requires-python` floor matters: uv resolves
+/// added packages for every Python it allows, and current releases (matplotlib,
+/// for one) already need more than 3.10.
 pub fn marimo_notebook(title: &str, summary: &str, code: &str, packages: &[&str]) -> String {
     let mut deps = vec!["marimo"];
     deps.extend(packages.iter().copied().filter(|p| *p != "marimo"));
@@ -26,7 +28,7 @@ pub fn marimo_notebook(title: &str, summary: &str, code: &str, packages: &[&str]
     let heading = markdown_literal(&format!("# {title}\n\n{summary}\n\nOpened from Parquetry. `df` holds the rows shown there."));
     format!(
         r#"# /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.12"
 # dependencies = [
 {deps}# ]
 #
@@ -463,5 +465,28 @@ mod tests {
             std::net::TcpStream::connect(host.as_str()).is_err()
         });
         assert!(gone, "marimo still serving after stop");
+    }
+
+    /// Adding a library from marimo (`uv add --script`) works: the header's Python
+    /// floor must suit current releases. Skipped without uv (required in CI).
+    #[test]
+    fn libraries_can_be_added() {
+        if std::process::Command::new("uv").arg("--version").output().is_err() {
+            assert!(std::env::var("PARQUETRY_REQUIRE_PYTHON_TESTS").is_err(), "uv is required");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let code = "import polars as pl\n\ndf = pl.DataFrame({\"id\": [1]})\n";
+        let path = write_notebook(dir.path(), "add.py", &marimo_notebook("x", "1 row", code, &["polars"])).unwrap();
+        let output = std::process::Command::new("uv")
+            .args(["add", "--quiet", "--script"])
+            .arg(&path)
+            // marimo pins the latest release; these need Python 3.11+.
+            .args(["matplotlib>=3.11", "seaborn"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "uv add failed:\n{}", String::from_utf8_lossy(&output.stderr));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"matplotlib") && text.contains("\"seaborn"), "{text}");
     }
 }
