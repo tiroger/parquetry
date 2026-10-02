@@ -33,17 +33,24 @@ pub fn forward(locations: &[String]) -> bool {
 }
 
 fn forward_via(info_path: &std::path::Path, locations: &[String]) -> bool {
-    let Ok(info) = std::fs::read_to_string(info_path) else {
-        return false;
-    };
+    match try_forward(info_path, locations) {
+        Ok(()) => true,
+        Err(reason) => {
+            log::info!("not handing over to a running instance: {reason}");
+            false
+        }
+    }
+}
+
+fn try_forward(info_path: &std::path::Path, locations: &[String]) -> Result<(), String> {
+    let info = std::fs::read_to_string(info_path).map_err(|e| format!("no instance file: {e}"))?;
     let mut lines = info.lines();
     let (Some(port), Some(token)) = (lines.next().and_then(|p| p.trim().parse::<u16>().ok()), lines.next()) else {
-        return false;
+        return Err("unreadable instance file".into());
     };
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
-        return false;
-    };
+    let mut stream =
+        TcpStream::connect_timeout(&address, Duration::from_millis(500)).map_err(|e| format!("connect: {e}"))?;
     // Generous: the running app may be busy (or the machine loaded), and giving up
     // here means a second copy starts instead.
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
@@ -53,12 +60,13 @@ fn forward_via(info_path: &std::path::Path, locations: &[String]) -> bool {
         message.push_str(location);
         message.push('\n');
     }
-    if stream.write_all(message.as_bytes()).is_err() || stream.shutdown(std::net::Shutdown::Write).is_err() {
-        return false;
-    }
-    // The running instance acknowledges once it accepted the token.
+    stream.write_all(message.as_bytes()).map_err(|e| format!("send: {e}"))?;
+    stream.shutdown(std::net::Shutdown::Write).map_err(|e| format!("finish sending: {e}"))?;
+    // The running instance acknowledges once it accepted the token. Read just that
+    // line: how the connection ends afterwards (Windows may reset it) doesn't matter.
     let mut reply = String::new();
-    stream.read_to_string(&mut reply).is_ok() && reply.trim() == "ok"
+    BufReader::new(&mut stream).read_line(&mut reply).map_err(|e| format!("reply: {e}"))?;
+    if reply.trim() == "ok" { Ok(()) } else { Err(format!("refused (reply {reply:?})")) }
 }
 
 /// Become the running instance: accept locations from later launches and send
@@ -110,6 +118,9 @@ fn receive(mut stream: TcpStream, token: &str) -> Option<Vec<String>> {
     }
     let locations: Vec<String> = lines.map_while(Result::ok).filter(|l| !l.trim().is_empty()).collect();
     let _ = stream.write_all(b"ok\n");
+    let _ = stream.flush();
+    // Close gracefully, so the reply isn't lost to a reset.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
     Some(locations)
 }
 
@@ -138,11 +149,11 @@ mod tests {
 
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         listen_at(path.clone(), tx);
-        assert!(forward_via(&path, &["/data/a.parquet".into(), "s3://b/k".into()]));
+        try_forward(&path, &["/data/a.parquet".into(), "s3://b/k".into()]).expect("hand over");
         let got = futures::executor::block_on(rx.next()).unwrap();
         assert_eq!(got, vec!["/data/a.parquet".to_string(), "s3://b/k".to_string()]);
 
-        assert!(forward_via(&path, &[]));
+        try_forward(&path, &[]).expect("hand over nothing");
         assert_eq!(futures::executor::block_on(rx.next()).unwrap(), Vec::<String>::new());
 
         // A wrong token is refused and nothing is delivered.

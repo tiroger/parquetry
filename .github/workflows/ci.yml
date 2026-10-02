@@ -29,6 +29,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: astral-sh/setup-uv@v6
+        with:
+          # A pinned version skips the "latest release" lookup, which can time out.
+          version: "0.12.3"
 
       - name: cargo test
         run: cargo test --workspace --locked
@@ -53,6 +56,9 @@ jobs:
           cache-on-failure: true
 
       - uses: astral-sh/setup-uv@v6
+        with:
+          # A pinned version skips the "latest release" lookup, which can time out.
+          version: "0.12.3"
 
       - name: cargo test
         run: cargo test --workspace --locked --no-fail-fast
