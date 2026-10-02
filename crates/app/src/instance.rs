@@ -44,8 +44,10 @@ fn forward_via(info_path: &std::path::Path, locations: &[String]) -> bool {
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
         return false;
     };
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    // Generous: the running app may be busy (or the machine loaded), and giving up
+    // here means a second copy starts instead.
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut message = format!("{}\n", token.trim());
     for location in locations {
         message.push_str(location);
@@ -101,7 +103,7 @@ fn listen_at(path: PathBuf, tx: UnboundedSender<Vec<String>>) {
 }
 
 fn receive(mut stream: TcpStream, token: &str) -> Option<Vec<String>> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut lines = BufReader::new(stream.try_clone().ok()?.take(MAX_MESSAGE)).lines();
     if lines.next()?.ok()?.trim() != token {
         return None;
