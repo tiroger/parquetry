@@ -230,6 +230,15 @@ impl Settings {
         self.recent_notebooks.truncate(MAX_RECENT_NOTEBOOKS);
     }
 
+    /// Where Open in marimo saves notebooks.
+    pub fn notebooks_folder(&self) -> PathBuf {
+        self.notebooks_dir
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+            .map(|d| PathBuf::from(parquetry_engine::expand_home_path(d)))
+            .unwrap_or_else(crate::notebook::default_notebooks_dir)
+    }
+
     /// Recent notebooks that still exist, as shown in File ▸ Recent Notebooks.
     pub fn existing_recent_notebooks(&self) -> Vec<String> {
         self.recent_notebooks.iter().filter(|p| std::path::Path::new(p).is_file()).cloned().collect()

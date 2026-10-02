@@ -413,12 +413,7 @@ impl DatasetDocument {
         }
         let packages = python_packages(&code);
         let notebook = crate::notebook::marimo_notebook(&self.title, &summary, &code, &packages);
-        let dir = settings
-            .notebooks_dir
-            .as_deref()
-            .filter(|d| !d.trim().is_empty())
-            .map(|d| std::path::PathBuf::from(parquetry_engine::expand_home_path(d)))
-            .unwrap_or_else(crate::notebook::default_notebooks_dir);
+        let dir = settings.notebooks_folder();
         let file = crate::notebook::notebook_file_name(&self.title);
         let path = match crate::notebook::write_notebook(&dir, &file, &notebook) {
             Ok(path) => path,

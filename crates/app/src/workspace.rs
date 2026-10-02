@@ -577,6 +577,7 @@ impl Workspace {
         let settings = AppState::settings(cx);
         let recents = settings.recents.clone();
         let notebooks = settings.existing_recent_notebooks();
+        let notebooks_folder = settings.notebooks_folder();
         let now = format::now_secs();
         let action_button = |id: &'static str, icon: Icon, label: &'static str, action: Box<dyn Action>| {
             Button::new(id).icon(icon).label(label).on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
@@ -613,24 +614,25 @@ impl Workspace {
         .children(recents.iter().take(MAX_WELCOME_ROWS).enumerate().map(|(ix, recent)| {
             let remote = parquetry_engine::is_remote(&recent.location);
             let (folder, name) = format::split_location(&recent.location);
-            let kind = recent
-                .format
-                .or_else(|| parquetry_engine::format_from_extension(&recent.location))
-                .map(|f| f.label())
-                .unwrap_or(if remote { "S3" } else { "Folder" });
+            // The icon tells files, folders and S3 apart; name the format only when
+            // the name doesn't (a Delta table's folder, say).
+            let folder_like = !remote && parquetry_engine::format_from_extension(&recent.location).is_none();
+            let kind = recent.format.filter(|f| Some(*f) != parquetry_engine::format_from_extension(&recent.location)).map(|f| f.label());
             let open = recent.location.clone();
             let remove = recent.location.clone();
             welcome_row(
                 ("recent", ix).into(),
-                Icon::new(match kind {
-                    _ if remote => Lucide::Cloud,
-                    "Folder" => Lucide::Folder,
-                    _ => Lucide::Sheet,
+                Icon::new(if remote {
+                    Lucide::Cloud
+                } else if folder_like {
+                    Lucide::Folder
+                } else {
+                    Lucide::Sheet
                 })
                 .text_color(theme.muted_foreground),
                 name,
                 folder,
-                Some(kind),
+                kind,
                 format::ago(recent.opened_at, now),
                 &theme,
                 cx.listener(move |this, _, window, cx| {
@@ -655,7 +657,12 @@ impl Workspace {
         .children(notebooks.iter().take(MAX_WELCOME_ROWS).enumerate().map(|(ix, path)| {
             let file = std::path::Path::new(path);
             let name = file.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-            let folder = file.parent().map(|p| format::display_path(&p.to_string_lossy())).unwrap_or_default();
+            // Only notebooks saved somewhere else show their folder.
+            let folder = file
+                .parent()
+                .filter(|p| *p != notebooks_folder)
+                .map(|p| format::display_path(&p.to_string_lossy()))
+                .unwrap_or_default();
             let modified = std::fs::metadata(file)
                 .and_then(|m| m.modified())
                 .ok()
