@@ -6238,7 +6238,7 @@ dependencies = [
 
 [[package]]
 name = "parquetry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "parquetry-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -6284,7 +6284,7 @@ dependencies = [
 
 [[package]]
 name = "parquetry-grid"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "duckdb",
  "gpui-kit",
@@ -6297,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "parquetry-quicklook"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow",
  "parquet",

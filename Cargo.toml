@@ -4,7 +4,7 @@ members = ["crates/engine", "crates/grid", "crates/app", "crates/quicklook"]
 default-members = ["crates/app"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/tiroger/parquetry"
