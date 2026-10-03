@@ -99,6 +99,9 @@ jobs:
       - name: Property lists
         run: plutil -lint packaging/Info.plist.template packaging/Parquetry.entitlements
 
+      - name: Disk image settings
+        run: python3 -m py_compile packaging/dmg/settings.py
+
       - name: Cask syntax
         run: ruby -c packaging/homebrew/parquetry.rb
 

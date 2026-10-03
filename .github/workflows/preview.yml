@@ -39,6 +39,11 @@ jobs:
           key: preview-macos
           cache-on-failure: true
 
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # dmgbuild (the disk image window) runs through uv. Pinned: see ci.yml.
+          version: "0.12.3"
+
       - name: Import Developer ID certificate
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}

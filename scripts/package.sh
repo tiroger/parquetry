@@ -1,7 +1,8 @@
 #!/bin/bash
 # Package target/dist/Parquetry.app (built by scripts/bundle.sh) into
 #   target/dist/Parquetry-<version>.zip   (ditto; what Homebrew and notarytool consume)
-#   target/dist/Parquetry-<version>.dmg   (UDZO, app + /Applications symlink)
+#   target/dist/Parquetry-<version>.dmg   (UDZO, app + /Applications symlink, drawn
+#                                          window from packaging/dmg via dmgbuild; needs uv)
 # and print their SHA-256 (also written to target/dist/SHA256SUMS).
 #
 #   scripts/bundle.sh && scripts/package.sh
@@ -25,6 +26,8 @@ APP="$DIST/$APP_NAME.app"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 FORMATS="${PACKAGE_FORMATS:-zip dmg}"
 VOLNAME="$APP_NAME"
+DMGBUILD_VERSION="1.6.7"
+UV="$(command -v uv || true)"
 
 if [ -t 2 ]; then C_B=$'\033[1;34m' C_R=$'\033[1;31m' C_0=$'\033[0m'; else C_B="" C_R="" C_0=""; fi
 log() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*" >&2; }
@@ -49,13 +52,24 @@ for fmt in $FORMATS; do
 			;;
 		dmg)
 			log "Creating $DMG"
+			rm -f "$DMG"
 			STAGE="$(mktemp -d "${TMPDIR:-/tmp}/parquetry-dmg.XXXXXX")"
 			trap 'rm -rf "$STAGE"' EXIT
-			ditto "$APP" "$STAGE/$APP_NAME.app"
-			ln -s /Applications "$STAGE/Applications"
-			rm -f "$DMG"
-			hdiutil create -quiet -volname "$VOLNAME" -srcfolder "$STAGE" -fs HFS+ \
-				-format UDZO -imagekey zlib-level=9 -ov "$DMG"
+			if [ -n "$UV" ]; then
+				# The drawn window: background, icon size and positions (packaging/dmg).
+				tiffutil -cathidpicheck "$ROOT/packaging/dmg/background.png" "$ROOT/packaging/dmg/background@2x.png" \
+					-out "$STAGE/background.tiff" >/dev/null
+				"$UV" tool run --quiet --from "dmgbuild==$DMGBUILD_VERSION" dmgbuild \
+					-s "$ROOT/packaging/dmg/settings.py" -D app="$APP" -D background="$STAGE/background.tiff" \
+					"$VOLNAME" "$DMG" 2> >(grep -v "is deprecated" >&2) >/dev/null
+			else
+				[ -z "${CI:-}" ] || die "uv is required in CI for the disk image window"
+				log "uv not found: plain disk image without the drawn window"
+				ditto "$APP" "$STAGE/$APP_NAME.app"
+				ln -s /Applications "$STAGE/Applications"
+				hdiutil create -quiet -volname "$VOLNAME" -srcfolder "$STAGE" -fs HFS+ \
+					-format UDZO -imagekey zlib-level=9 -ov "$DMG"
+			fi
 			rm -rf "$STAGE"
 			trap - EXIT
 			if [ "$IDENTITY" != "-" ]; then

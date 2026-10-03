@@ -14,6 +14,7 @@ Everything needed to turn the `parquetry` binary into a signed, notarized
 | `scripts/bundle.sh` | Build + assemble + sign `target/dist/Parquetry.app` |
 | `scripts/package.sh` | `target/dist/Parquetry-<v>.zip` and `.dmg` and `SHA256SUMS` |
 | `scripts/notarize.sh` | Notarize and staple the app and dmg |
+| `packaging/dmg/` | The disk image window: background (`background.svg`, rendered to `background{,@2x}.png` by `render.swift`) and `settings.py` for [dmgbuild](https://github.com/dmgbuild/dmgbuild), which `package.sh` runs through uv |
 | `scripts/appcast.sh` | Sign the zip and write the Sparkle update feed `target/dist/appcast.xml` |
 | `scripts/update-cask.sh` | Render the cask with the real version and sha256 |
 | `packaging/scoop/parquetry.json` | Scoop manifest template, rendered by `scripts/update-scoop.sh` |
@@ -234,6 +235,17 @@ unnotarized apps also fail `brew audit`. Ad-hoc builds (`CODESIGN_IDENTITY=-`,
 the default) are only for local testing.
 
 ## Design notes
+
+**Disk image window.** `package.sh` builds the dmg with dmgbuild, which writes
+the window layout (background, 128 pt icons, their positions) straight into
+the image, so it needs no Finder scripting and works on CI. The background is
+a pencil drawing: edit `packaging/dmg/background.svg`, then re-render both
+sizes with the commands at the top of `render.swift` (WebKit draws the pencil
+filters and the Bradley Hand lettering into the PNGs, so nothing is needed at
+build time). Icons sit at (170, 187) and (490, 187), under the drawn dimension
+line; keep the bottom 30 pt free of anything important, since Finder's path
+bar covers it for people who turn it on. Without uv, a local `package.sh`
+falls back to a plain dmg; on CI it fails instead.
 
 **Entitlements.** The app is not sandboxed: it opens arbitrary paths, folders
 and globs, and reads `~/.aws`. The only entitlement is

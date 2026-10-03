@@ -51,6 +51,11 @@ jobs:
         with:
           key: universal-release
 
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # dmgbuild (the disk image window) runs through uv. Pinned: see ci.yml.
+          version: "0.12.3"
+
       - name: Check tag matches Cargo.toml version
         run: |
           version="$(awk '/^\[/{s=($0=="[workspace.package]")} s&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml)"
