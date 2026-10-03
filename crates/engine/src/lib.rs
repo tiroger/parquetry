@@ -26,7 +26,7 @@ pub use export::{CopyFormat, ExportFormat, ExportOutcome, export_view, format_ce
 pub use filter::{Filter, FilterOp, SortKey, ViewSpec};
 pub use metadata::{MetadataTable, metadata_table};
 pub use query::{QueryOutcome, SqlTable, run_sql, split_statements, table_name_for};
-pub use s3::{S3Entry, S3Url, is_remote};
+pub use s3::{CredentialIssue, S3Entry, S3Url, credential_issue, is_remote};
 pub use source::{Format, SourceSpec, expand_home as expand_home_path, format_from_extension};
 pub use stats::{
     ChartKind, ColumnSummary, HistogramBin, StatsMode, TopValue, ValueCounts, format_epoch_micros,
@@ -47,5 +47,11 @@ impl Engine {
     pub fn s3_list(&self, url: String) -> Job<Vec<S3Entry>> {
         let engine = self.clone();
         self.run(Lane::Task, move |_| engine.inner.s3.list(&url))
+    }
+
+    /// Forget cached S3 credentials, so the next access picks up new ones (after
+    /// `aws sso login`, say).
+    pub fn refresh_s3_credentials(&self) {
+        self.inner.s3.reconfigure(self.settings().s3);
     }
 }

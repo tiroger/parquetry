@@ -95,8 +95,6 @@ pub struct S3Settings {
     pub endpoint: Option<String>,
     /// Use path-style addressing (needed by most S3-compatible stores).
     pub path_style: bool,
-    /// Skip credentials entirely (public buckets).
-    pub anonymous: bool,
 }
 
 type Work = Box<dyn FnOnce(&Connection, &Arc<InterruptHandle>) + Send>;

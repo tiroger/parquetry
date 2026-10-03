@@ -94,3 +94,27 @@ line	tab',
         )
     }
 }
+
+/// Hide every AWS credential source from this test process (config files,
+/// environment, instance metadata). Call before the engine first touches S3.
+pub fn isolate_from_aws_credentials() {
+    let none = std::env::temp_dir().join("parquetry-no-aws");
+    // SAFETY: tests that call this set the same values before starting any S3 work.
+    unsafe {
+        for var in [
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ] {
+            std::env::remove_var(var);
+        }
+        std::env::set_var("AWS_CONFIG_FILE", none.join("config"));
+        std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", none.join("credentials"));
+        std::env::set_var("AWS_EC2_METADATA_DISABLED", "true");
+    }
+}

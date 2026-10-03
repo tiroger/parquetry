@@ -63,7 +63,6 @@ pub struct SettingsForm {
     notebook_target: Entity<SelectState<Vec<SharedString>>>,
     notebooks_dir: Entity<InputState>,
     path_style: bool,
-    anonymous: bool,
     memory: Entity<InputState>,
     result_limit: Entity<InputState>,
     sample_threshold: Entity<InputState>,
@@ -144,7 +143,6 @@ impl SettingsForm {
                 cx,
             ),
             path_style: s3.path_style,
-            anonymous: s3.anonymous,
             memory: input(settings.engine.memory_limit.clone().unwrap_or_default(), "Automatic (80% of RAM), e.g. 16GB", window, cx),
             result_limit: input(settings.engine.result_limit_rows.to_string(), "10000000", window, cx),
             sample_threshold: input(settings.engine.sample_threshold_rows.to_string(), "100000000", window, cx),
@@ -177,7 +175,6 @@ impl SettingsForm {
         let target_ix = self.notebook_target.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
         settings.notebook_target = NotebookTarget::all()[target_ix.min(NotebookTarget::all().len() - 1)];
         settings.engine.s3.path_style = self.path_style;
-        settings.engine.s3.anonymous = self.anonymous;
         settings.engine.memory_limit = text(&self.memory);
         let number = |input: &Entity<InputState>, name: &str| -> Result<Option<u64>, String> {
             match text(input) {
@@ -314,15 +311,11 @@ impl Render for SettingsForm {
                             .child(Switch::new("path-style").label("Path-style addressing (MinIO, R2, …)").checked(self.path_style).on_click(cx.listener(|this, on: &bool, _, cx| {
                                 this.path_style = *on;
                                 cx.notify();
-                            })))
-                            .child(Switch::new("anonymous").label("Anonymous access (public buckets)").checked(self.anonymous).on_click(cx.listener(|this, on: &bool, _, cx| {
-                                this.anonymous = *on;
-                                cx.notify();
                             }))),
                         cx,
                     ))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
-                        "Profiles come from ~/.aws/config. For SSO profiles, run `aws sso login --profile NAME` first.",
+                        "Profiles come from ~/.aws/config. For SSO profiles, run `aws sso login --profile NAME` first. Without any credentials, public buckets still open.",
                     )),
             )
             .child(

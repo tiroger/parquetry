@@ -142,20 +142,7 @@ pub fn default_notebooks_dir() -> PathBuf {
 /// Find `uv`. Apps opened from the Dock or Start menu don't get the shell's PATH,
 /// so also look where uv's installers put it.
 pub fn find_uv() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "uv.exe" } else { "uv" };
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".local").join("bin"));
-        dirs.push(home.join(".cargo").join("bin"));
-    }
-    if cfg!(windows) {
-        if let Some(local) = dirs::data_local_dir() {
-            dirs.push(local.join("Programs").join("uv"));
-        }
-    } else {
-        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
-    }
-    dirs.into_iter().map(|d| d.join(exe)).find(|p| p.is_file())
+    crate::programs::find("uv")
 }
 
 /// Project settings for marimo in the notebooks folder: run notebooks when they
@@ -184,7 +171,9 @@ fn marimo_command(notebook: &Path, extra: &[&str]) -> Result<Command> {
         path_var.push(if cfg!(windows) { ";" } else { ":" });
         path_var.push(existing);
     }
-    let mut command = Command::new(&uv);
+    // Its own process group (`programs::stop` also stops the Python it starts),
+    // and no console window on Windows.
+    let mut command = crate::programs::command(&uv);
     command
         .args(["tool", "run", "marimo", "edit", "--sandbox"])
         .args(extra)
@@ -193,18 +182,6 @@ fn marimo_command(notebook: &Path, extra: &[&str]) -> Result<Command> {
         .stdin(Stdio::null());
     if let Some(dir) = notebook.parent() {
         command.current_dir(dir);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    // Its own process group, so stopping it also stops the Python it starts.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
     }
     Ok(command)
 }
@@ -342,21 +319,7 @@ impl Drop for MarimoServer {
 
 /// Stop a marimo server and the processes it started.
 fn stop_process(pid: u32) {
-    #[cfg(unix)]
-    let mut command = {
-        // The whole process group (uv, marimo, its kernel).
-        let mut c = Command::new("kill");
-        c.args(["-TERM", &format!("-{pid}")]);
-        c
-    };
-    #[cfg(windows)]
-    let mut command = {
-        use std::os::windows::process::CommandExt as _;
-        let mut c = Command::new("taskkill");
-        c.args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000);
-        c
-    };
-    let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+    crate::programs::stop(pid);
     RUNNING.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| *p != pid);
 }
 

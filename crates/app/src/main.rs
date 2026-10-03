@@ -15,6 +15,7 @@ mod instance;
 mod notebook;
 #[cfg(any(target_os = "macos", windows))]
 mod notebook_window;
+mod programs;
 mod session;
 mod settings;
 mod sql_panel;

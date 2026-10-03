@@ -67,6 +67,9 @@ struct S3State {
     runtime: Option<tokio::runtime::Runtime>,
     config: Option<aws_config::SdkConfig>,
     bucket_regions: HashMap<String, String>,
+    /// No credentials were found (no profile, environment or instance role), so
+    /// requests go unsigned and only public data can be read.
+    unsigned: bool,
     /// Buckets with a DuckDB secret, and when that secret's credentials expire.
     secrets: HashMap<String, Option<SystemTime>>,
 }
@@ -76,6 +79,38 @@ pub struct S3Service {
 }
 
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+
+// Messages the app recognizes (`credential_issue`) to offer a way out.
+const NO_CREDENTIALS: &str = "No AWS credentials were found";
+const NO_CREDENTIALS_LIST: &str = "No AWS credentials were found, so only public buckets can be read. Type a bucket path such as s3://bucket/prefix/, or choose an AWS profile in Settings ▸ Amazon S3.";
+const SIGNED_OUT: &str = "Your AWS SSO session has expired or isn’t signed in";
+const EXPIRED: &str = "Your AWS credentials have expired";
+const DENIED: &str = "Access denied: these credentials aren’t allowed to read this location.";
+
+/// A credentials problem behind an S3 error, which the person can fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialIssue {
+    /// No credentials anywhere (only public data can be read).
+    Missing,
+    /// An SSO session (or temporary credentials) expired: sign in again.
+    SignedOut,
+    /// The credentials work but may not read this location.
+    Denied,
+}
+
+/// Which credentials problem, if any, `error` (from an S3 operation) reports.
+pub fn credential_issue(error: &Error) -> Option<CredentialIssue> {
+    let Error::Other(message) = error else { return None };
+    if message.contains(NO_CREDENTIALS) {
+        Some(CredentialIssue::Missing)
+    } else if message.contains(SIGNED_OUT) || message.contains(EXPIRED) {
+        Some(CredentialIssue::SignedOut)
+    } else if message.contains(DENIED) {
+        Some(CredentialIssue::Denied)
+    } else {
+        None
+    }
+}
 
 impl S3Service {
     pub fn new(settings: S3Settings) -> Self {
@@ -91,6 +126,7 @@ impl S3Service {
         let mut state = self.state.lock();
         state.settings = settings;
         state.config = None;
+        state.unsigned = false;
         state.bucket_regions.clear();
         state.secrets.clear();
     }
@@ -115,23 +151,34 @@ impl S3Service {
         }
         let settings = state.settings.clone();
         let runtime = Self::runtime(state)?;
-        let config = runtime.block_on(async move {
-            let mut loader = aws_config::defaults(BehaviorVersion::latest());
-            if let Some(profile) = settings.profile.as_deref().filter(|p| !p.is_empty()) {
-                loader = loader.profile_name(profile);
-            }
-            if let Some(region) = settings.region.as_deref().filter(|r| !r.is_empty()) {
-                loader = loader.region(aws_config::Region::new(region.to_string()));
-            }
-            if let Some(endpoint) = settings.endpoint.as_deref().filter(|e| !e.is_empty()) {
-                loader = loader.endpoint_url(endpoint);
-            }
-            if settings.anonymous {
-                loader = loader.no_credentials();
-            }
-            loader.load().await
+        let (config, unsigned) = runtime.block_on(async move {
+            let loader = || {
+                let mut loader = aws_config::defaults(BehaviorVersion::latest());
+                if let Some(profile) = settings.profile.as_deref().filter(|p| !p.is_empty()) {
+                    loader = loader.profile_name(profile);
+                }
+                if let Some(region) = settings.region.as_deref().filter(|r| !r.is_empty()) {
+                    loader = loader.region(aws_config::Region::new(region.to_string()));
+                }
+                if let Some(endpoint) = settings.endpoint.as_deref().filter(|e| !e.is_empty()) {
+                    loader = loader.endpoint_url(endpoint);
+                }
+                loader
+            };
+            let config = loader().load().await;
+            // Nothing in the credential chain at all: read public data unsigned. Other
+            // failures (an expired SSO session, say) are reported when used instead.
+            let missing = match config.credentials_provider() {
+                None => true,
+                Some(provider) => matches!(
+                    provider.provide_credentials().await,
+                    Err(aws_credential_types::provider::error::CredentialsError::CredentialsNotLoaded(_))
+                ),
+            };
+            if missing { (loader().no_credentials().load().await, true) } else { (config, false) }
         });
         state.config = Some(config.clone());
+        state.unsigned = unsigned;
         Ok(config)
     }
 
@@ -150,10 +197,10 @@ impl S3Service {
     }
 
     fn resolve_credentials(state: &mut S3State) -> Result<Option<Credentials>> {
-        if state.settings.anonymous {
+        let config = Self::sdk_config(state)?;
+        if state.unsigned {
             return Ok(None);
         }
-        let config = Self::sdk_config(state)?;
         let Some(provider) = config.credentials_provider() else {
             return Ok(None);
         };
@@ -294,10 +341,13 @@ impl S3Service {
             key: String::new(),
         });
         if parsed.bucket.is_empty() {
-            if self.state.lock().settings.anonymous {
-                return Err(Error::other(
-                    "Anonymous access can’t list buckets. Type a bucket path such as s3://bucket/prefix/.",
-                ));
+            let unsigned = {
+                let mut state = self.state.lock();
+                Self::sdk_config(&mut state)?;
+                state.unsigned
+            };
+            if unsigned {
+                return Err(Error::other(NO_CREDENTIALS_LIST));
             }
             let (client, runtime) = self.client_for(None)?;
             let buckets = runtime
@@ -447,16 +497,16 @@ pub(crate) fn describe_aws_error(text: &str) -> String {
         || lower.contains("could not load credentials")
         || lower.contains("no providers in chain")
     {
-        return "No AWS credentials were found. Choose an AWS profile (Settings ▸ Amazon S3), or use anonymous access for public buckets.".into();
+        return format!("{NO_CREDENTIALS}. Choose an AWS profile in Settings ▸ Amazon S3.");
     }
     if lower.contains("sso") && (lower.contains("expired") || lower.contains("token")) {
-        return "Your AWS SSO session has expired or isn’t signed in. Run `aws sso login` for this profile, then try again.".into();
+        return format!("{SIGNED_OUT}. Run `aws sso login` for this profile, then try again.");
     }
     if lower.contains("expiredtoken") || lower.contains("token has expired") || lower.contains("security token included in the request is expired") {
-        return "Your AWS credentials have expired. Refresh them (e.g. `aws sso login`), then try again.".into();
+        return format!("{EXPIRED}. Refresh them (e.g. `aws sso login`), then try again.");
     }
     if lower.contains("accessdenied") || lower.contains("access denied") || lower.contains("403") {
-        return "Access denied: these credentials aren’t allowed to read this location.".into();
+        return DENIED.into();
     }
     if lower.contains("nosuchbucket") {
         return "That bucket doesn’t exist.".into();
@@ -496,6 +546,18 @@ mod tests {
         assert!(describe_aws_error("The SSO session associated with this profile has expired").contains("aws sso login"));
         assert!(describe_aws_error("NoSuchBucket").contains("doesn’t exist"));
         assert_eq!(describe_aws_error("weird"), "weird");
+    }
+
+    #[test]
+    fn credential_issues() {
+        let issue = |raw: &str| credential_issue(&Error::other(format!("Couldn’t list buckets: {}", describe_aws_error(raw))));
+        assert_eq!(issue("no providers in chain provided credentials"), Some(CredentialIssue::Missing));
+        assert_eq!(credential_issue(&Error::other(NO_CREDENTIALS_LIST)), Some(CredentialIssue::Missing));
+        assert_eq!(issue("The SSO session associated with this profile has expired"), Some(CredentialIssue::SignedOut));
+        assert_eq!(issue("ExpiredToken: The provided token has expired"), Some(CredentialIssue::SignedOut));
+        assert_eq!(issue("service error: AccessDenied: Access Denied"), Some(CredentialIssue::Denied));
+        assert_eq!(issue("NoSuchBucket"), None);
+        assert_eq!(credential_issue(&Error::Query("Access denied: x".into())), None, "only S3 errors");
     }
 
     #[test]

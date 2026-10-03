@@ -4,12 +4,10 @@ mod common;
 
 use parquetry_engine::*;
 
-fn anonymous() -> common::Fixture {
-    let settings = EngineSettings {
-        s3: S3Settings { anonymous: true, ..Default::default() },
-        ..Default::default()
-    };
-    common::Fixture::with_settings(settings)
+/// No AWS credentials anywhere, so public data is read unsigned.
+fn no_credentials() -> common::Fixture {
+    common::isolate_from_aws_credentials();
+    common::Fixture::with_settings(EngineSettings::default())
 }
 
 const OOKLA: &str = "s3://ookla-open-data/parquet/performance/type=fixed/year=2023/quarter=1/";
@@ -17,9 +15,11 @@ const OOKLA: &str = "s3://ookla-open-data/parquet/performance/type=fixed/year=20
 #[test]
 #[ignore]
 fn list_and_open_public_s3() {
-    let fx = anonymous();
+    let fx = no_credentials();
     let entries = fx.engine.s3_list(OOKLA.into()).wait().expect("list");
     assert!(!entries.is_empty());
+    let buckets = fx.engine.s3_list("s3://".into()).wait().expect_err("can't list buckets unsigned");
+    assert!(buckets.to_string().contains("only public buckets"), "{buckets}");
     let file = entries.iter().find(|e| e.name.ends_with(".parquet")).expect("a parquet object");
     let t = std::time::Instant::now();
     let ds = Dataset::open(&fx.engine, SourceSpec::new(&file.url)).wait().expect("open");

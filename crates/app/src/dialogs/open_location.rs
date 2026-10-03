@@ -12,7 +12,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, IndexPath, Sizable a
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::*;
-use parquetry_engine::{Format, S3Entry, S3Url, SourceSpec, format_from_extension};
+use parquetry_engine::{CredentialIssue, Format, S3Entry, S3Url, SourceSpec, credential_issue, format_from_extension};
 
 use crate::app_state::AppState;
 use crate::format;
@@ -29,17 +29,29 @@ pub struct LocationBrowser {
     listing: Option<Task<()>>,
     debounce: Option<Task<()>>,
     error: Option<SharedString>,
+    /// The credentials problem behind `error`, shown as a way to fix it.
+    issue: Option<CredentialIssue>,
+    sign_in: SignIn,
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
     on_open: OnOpen,
     _subscriptions: Vec<Subscription>,
 }
 
+/// `aws sso login`, run from the dialog when an SSO session has expired.
+enum SignIn {
+    Idle,
+    Running { pid: u32, _task: Task<()> },
+    Failed(SharedString),
+}
+
+const AWS_SSO_GUIDE: &str = "https://docs.aws.amazon.com/cli/latest/userguide/sso-configure-profile-token.html";
+const AWS_CLI_INSTALL: &str = "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html";
+
 #[derive(Clone, PartialEq)]
 enum Credential {
     Default,
     Profile(String),
-    Anonymous,
 }
 
 impl Credential {
@@ -47,7 +59,6 @@ impl Credential {
         match self {
             Credential::Default => "Default AWS credentials".into(),
             Credential::Profile(p) => format!("Profile: {p}"),
-            Credential::Anonymous => "Anonymous (public data)".into(),
         }
     }
 }
@@ -79,13 +90,8 @@ impl LocationBrowser {
         });
         let mut credential_choices = vec![Credential::Default];
         credential_choices.extend(crate::dialogs::settings::aws_profiles().into_iter().map(Credential::Profile));
-        credential_choices.push(Credential::Anonymous);
         let s3 = AppState::settings(cx).engine.s3.clone();
-        let current = if s3.anonymous {
-            Credential::Anonymous
-        } else {
-            s3.profile.clone().filter(|p| !p.is_empty()).map(Credential::Profile).unwrap_or(Credential::Default)
-        };
+        let current = s3.profile.clone().filter(|p| !p.is_empty()).map(Credential::Profile).unwrap_or(Credential::Default);
         let current_ix = credential_choices.iter().position(|c| *c == current).unwrap_or(0);
         let credentials = cx.new(|cx| {
             SelectState::new(
@@ -101,15 +107,8 @@ impl LocationBrowser {
                 let ix = state.read(cx).selected_index(cx).map(|i| i.row).unwrap_or(0);
                 let Some(choice) = this.credential_choices.get(ix).cloned() else { return };
                 AppState::update_settings(cx, |s| match &choice {
-                    Credential::Default => {
-                        s.engine.s3.profile = None;
-                        s.engine.s3.anonymous = false;
-                    }
-                    Credential::Profile(p) => {
-                        s.engine.s3.profile = Some(p.clone());
-                        s.engine.s3.anonymous = false;
-                    }
-                    Credential::Anonymous => s.engine.s3.anonymous = true,
+                    Credential::Default => s.engine.s3.profile = None,
+                    Credential::Profile(p) => s.engine.s3.profile = Some(p.clone()),
                 });
                 let text = this.input.read(cx).value().trim().to_string();
                 if is_browsable(&text) {
@@ -127,6 +126,8 @@ impl LocationBrowser {
             listing: None,
             debounce: None,
             error: None,
+            issue: None,
+            sign_in: SignIn::Idle,
             selected: None,
             scroll: UniformListScrollHandle::new(),
             on_open,
@@ -143,6 +144,7 @@ impl LocationBrowser {
         // Enter reaches the dialog as Confirm and is handled by `confirm`.
         if let InputEvent::Change = event {
             self.error = None;
+            self.issue = None;
             if is_browsable(&text) {
                 // List after typing pauses.
                 self.debounce = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -158,6 +160,7 @@ impl LocationBrowser {
         let engine = AppState::engine(cx);
         let job = engine.s3_list(url.clone());
         self.error = None;
+        self.issue = None;
         self.selected = None;
         self.listing = Some(cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = job.await;
@@ -172,6 +175,7 @@ impl LocationBrowser {
                     Err(error) => {
                         this.entries.clear();
                         this.listed = None;
+                        this.issue = credential_issue(&error);
                         this.error = Some(error.to_string().into());
                     }
                 }
@@ -179,6 +183,177 @@ impl LocationBrowser {
             });
         }));
         cx.notify();
+    }
+
+    /// List the typed location again (after credentials change).
+    fn relist(&mut self, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).value().trim().to_string();
+        if is_browsable(&text) {
+            self.list(text, cx);
+        }
+    }
+
+    fn use_profile(&mut self, profile: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.credential_choices.iter().position(|c| *c == Credential::Profile(profile.clone())) {
+            self.credentials.update(cx, |s, cx| s.set_selected_index(Some(IndexPath::new(ix)), window, cx));
+        }
+        AppState::update_settings(cx, |s| s.engine.s3.profile = Some(profile));
+        self.relist(cx);
+    }
+
+    /// Run `aws sso login` for the current profile; list again once it succeeds.
+    fn sign_in(&mut self, cx: &mut Context<Self>) {
+        let Some(aws) = crate::programs::find("aws") else { return };
+        let mut command = crate::programs::command(&aws);
+        command.args(["sso", "login"]);
+        if let Some(profile) = current_profile(cx) {
+            command.args(["--profile", &profile]);
+        }
+        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.sign_in = SignIn::Failed(format!("Couldn’t run the AWS CLI: {error}").into());
+                cx.notify();
+                return;
+            }
+        };
+        let pid = child.id();
+        // Replacing `sign_in` (Cancel, or closing the dialog) drops this task.
+        let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let output = cx.background_executor().spawn(async move { child.wait_with_output() }).await;
+            let _ = this.update(cx, |this, cx| {
+                match output {
+                    Ok(output) if output.status.success() => {
+                        this.sign_in = SignIn::Idle;
+                        AppState::engine(cx).refresh_s3_credentials();
+                        this.relist(cx);
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let reason = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Signing in didn’t finish.");
+                        this.sign_in = SignIn::Failed(reason.trim().to_string().into());
+                    }
+                    Err(error) => this.sign_in = SignIn::Failed(error.to_string().into()),
+                }
+                cx.notify();
+            });
+        });
+        self.sign_in = SignIn::Running { pid, _task: task };
+        cx.notify();
+    }
+
+    fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        if let SignIn::Running { pid, .. } = self.sign_in {
+            crate::programs::stop(pid);
+        }
+        self.sign_in = SignIn::Idle;
+        cx.notify();
+    }
+
+    /// In place of an error: what's wrong with the credentials and a way to fix it.
+    fn render_credential_help(&self, issue: CredentialIssue, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let profile = current_profile(cx);
+        let who = profile.as_ref().map(|p| format!("The “{p}” profile")).unwrap_or_else(|| "Your default AWS credentials".into());
+        let others: Vec<String> = self
+            .credential_choices
+            .iter()
+            .filter_map(|c| match c {
+                Credential::Profile(p) if Some(p) != profile.as_ref() => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        let aws = crate::programs::find("aws");
+        let (icon, title, body): (Lucide, &str, String) = match issue {
+            CredentialIssue::Missing if others.is_empty() => (
+                Lucide::KeyRound,
+                "Connect to AWS",
+                "Parquetry reads S3 with your AWS CLI profiles, and none are set up on this computer yet. Set one up in Terminal, then come back.".into(),
+            ),
+            CredentialIssue::Missing => (Lucide::KeyRound, "Connect to AWS", "Parquetry reads S3 with your AWS CLI profiles. Choose one to browse your buckets.".into()),
+            CredentialIssue::SignedOut => (
+                Lucide::LogIn,
+                "Sign in to AWS",
+                match &profile {
+                    Some(p) => format!("Your AWS sign-in for the “{p}” profile has expired."),
+                    None => "Your AWS sign-in has expired.".into(),
+                },
+            ),
+            CredentialIssue::Denied => (Lucide::ShieldX, "No access here", format!("{who} can’t read this location. Choose another profile, or ask for access.")),
+        };
+        let profile_buttons = |limit: usize| {
+            h_flex().gap_2().flex_wrap().justify_center().children(others.iter().take(limit).enumerate().map(|(ix, p)| {
+                let p = p.clone();
+                Button::new(("use-profile", ix))
+                    .label(format!("Use {p}"))
+                    .small()
+                    .map(|b| if ix == 0 { b.primary() } else { b.outline() })
+                    .on_click(cx.listener(move |this, _, window, cx| this.use_profile(p.clone(), window, cx)))
+            }))
+        };
+        let copy_button = |id: &'static str, label: &'static str, text: String| {
+            Button::new(id).label(label).icon(Lucide::Copy).small().outline().on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
+        };
+        let link_button = |id: &'static str, label: &'static str, url: &'static str| {
+            Button::new(id).label(label).icon(Lucide::ExternalLink).small().ghost().on_click(move |_, _, cx| cx.open_url(url))
+        };
+        let login_command = match &profile {
+            Some(p) => format!("aws sso login --profile {p}"),
+            None => "aws sso login".to_string(),
+        };
+        let actions = match issue {
+            CredentialIssue::Missing if others.is_empty() => h_flex()
+                .gap_2()
+                .flex_wrap()
+                .justify_center()
+                .child(copy_button("copy-configure", "Copy setup command", "aws configure sso".into()))
+                .child(match aws {
+                    Some(_) => link_button("sso-guide", "How to set up", AWS_SSO_GUIDE),
+                    None => link_button("install-aws", "Install the AWS CLI", AWS_CLI_INSTALL),
+                })
+                .into_any_element(),
+            CredentialIssue::Missing | CredentialIssue::Denied => profile_buttons(4).into_any_element(),
+            CredentialIssue::SignedOut => match (&self.sign_in, aws) {
+                (SignIn::Running { .. }, _) => h_flex()
+                    .gap_2()
+                    .child(Spinner::new().small())
+                    .child(div().text_sm().child("Finish signing in in your browser…"))
+                    .child(Button::new("cancel-sign-in").label("Cancel").small().ghost().on_click(cx.listener(|this, _, _, cx| this.cancel_sign_in(cx))))
+                    .into_any_element(),
+                (_, Some(_)) => Button::new("sign-in")
+                    .label("Sign In")
+                    .icon(Lucide::LogIn)
+                    .small()
+                    .primary()
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_in(cx)))
+                    .into_any_element(),
+                (_, None) => h_flex()
+                    .gap_2()
+                    .child(copy_button("copy-login", "Copy sign-in command", login_command))
+                    .child(link_button("install-aws", "Install the AWS CLI", AWS_CLI_INSTALL))
+                    .into_any_element(),
+            },
+        };
+        let note = match (issue, &self.sign_in) {
+            (CredentialIssue::SignedOut, SignIn::Failed(reason)) => Some(reason.clone()),
+            (CredentialIssue::Missing, _) => Some("Public buckets open without credentials: type a path such as s3://bucket/prefix/.".into()),
+            _ => None,
+        };
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(Icon::new(icon).large().text_color(theme.primary))
+            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(div().max_w(rems(30.)).text_sm().text_center().text_color(theme.muted_foreground).whitespace_normal().child(body))
+            .child(actions)
+            .when_some(note, |this, note| {
+                this.child(div().max_w(rems(30.)).text_xs().text_center().text_color(theme.muted_foreground).whitespace_normal().child(note))
+            })
+            .into_any_element()
     }
 
     fn navigate(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -366,6 +541,8 @@ impl Render for LocationBrowser {
                         .map(|this| {
                             if self.listing.is_some() {
                                 this.child(h_flex().p_3().gap_2().text_sm().child(Spinner::new().small()).child("Listing…"))
+                            } else if let Some(issue) = self.issue {
+                                this.child(self.render_credential_help(issue, cx))
                             } else if let Some(error) = &self.error {
                                 this.child(div().p_3().text_sm().text_color(theme.danger).whitespace_normal().child(error.clone()))
                             } else if count == 0 && self.listed.is_some() {
@@ -410,6 +587,20 @@ impl Render for LocationBrowser {
                     ),
             )
     }
+}
+
+impl Drop for LocationBrowser {
+    fn drop(&mut self) {
+        // Closing the dialog cancels a sign-in in progress.
+        if let SignIn::Running { pid, .. } = self.sign_in {
+            crate::programs::stop(pid);
+        }
+    }
+}
+
+/// The AWS profile in use (`None`: the default credentials).
+fn current_profile(cx: &App) -> Option<String> {
+    AppState::settings(cx).engine.s3.profile.clone().filter(|p| !p.is_empty())
 }
 
 pub fn open(title: &str, initial: String, on_open: impl Fn(SourceSpec, &mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) {
