@@ -393,7 +393,20 @@ impl Workspace {
     }
 
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ix = self.active;
+        self.reload_tab(self.active, window, cx);
+    }
+
+    /// After the S3 credentials changed: reopen every tab that failed for want of them.
+    fn retry_credential_failures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let failed: Vec<usize> = (0..self.tabs.len())
+            .filter(|&ix| matches!(&self.tabs[ix].content, TabContent::Failed { error, .. } if crate::credentials::issue(error).is_some()))
+            .collect();
+        for ix in failed {
+            self.reload_tab(ix, window, cx);
+        }
+    }
+
+    fn reload_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix) else { return };
         // Keep filters, sort and layout across the reload.
         let (spec, restore) = match &tab.content {
@@ -759,6 +772,22 @@ impl Workspace {
                             })),
                     )
                     .into_any_element()
+            }
+            TabContent::Failed { spec, error, .. } if let Some(issue) = crate::credentials::issue(error) => {
+                let workspace = cx.entity().downgrade();
+                let retry: crate::credentials::Retry = std::rc::Rc::new(move |window, cx| {
+                    let _ = workspace.update(cx, |this, cx| this.retry_credential_failures(window, cx));
+                });
+                let footer = h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!("Couldn’t open {}.", spec.display_name()))
+                    .child(Button::new("close-failed").label("Close Tab").xsmall().ghost().on_click(cx.listener(|this, _, window, cx| {
+                        let ix = this.active;
+                        this.close_tab(ix, window, cx);
+                    })));
+                v_flex().size_full().child(crate::credentials::panel(issue, retry, Some(footer.into_any_element()), cx)).into_any_element()
             }
             TabContent::Failed { spec, error, .. } => v_flex()
                 .size_full()

@@ -118,7 +118,11 @@ fn choose_path_and_export(view: View, columns: Option<Vec<usize>>, format: Expor
                 );
             }
             Err(error) => {
-                window.push_notification(Notification::error(error.to_string()).title("Export failed").autohide(false), cx);
+                match crate::credentials::issue(&error.to_string()) {
+                    // Signing in is enough; the export is run again by hand.
+                    Some(issue) => window.push_notification(crate::credentials::notification(issue, std::rc::Rc::new(|_, _| {}), cx), cx),
+                    None => window.push_notification(Notification::error(error.to_string()).title("Export failed").autohide(false), cx),
+                }
             }
         });
     })

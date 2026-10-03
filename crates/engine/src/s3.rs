@@ -98,14 +98,18 @@ pub enum CredentialIssue {
     Denied,
 }
 
-/// Which credentials problem, if any, `error` (from an S3 operation) reports.
-pub fn credential_issue(error: &Error) -> Option<CredentialIssue> {
-    let Error::Other(message) = error else { return None };
+/// Which credentials problem, if any, an error message reports: ours (from
+/// resolving credentials or listing) or DuckDB's, from reading S3.
+pub fn credential_issue(message: &str) -> Option<CredentialIssue> {
+    let s3 = message.contains("s3://") || message.contains("amazonaws.com");
     if message.contains(NO_CREDENTIALS) {
         Some(CredentialIssue::Missing)
-    } else if message.contains(SIGNED_OUT) || message.contains(EXPIRED) {
+    } else if message.contains(SIGNED_OUT)
+        || message.contains(EXPIRED)
+        || (s3 && (message.contains("ExpiredToken") || message.contains("token has expired")))
+    {
         Some(CredentialIssue::SignedOut)
-    } else if message.contains(DENIED) {
+    } else if message.contains(DENIED) || (s3 && (message.contains("403") || message.contains("AccessDenied"))) {
         Some(CredentialIssue::Denied)
     } else {
         None
@@ -550,14 +554,18 @@ mod tests {
 
     #[test]
     fn credential_issues() {
-        let issue = |raw: &str| credential_issue(&Error::other(format!("Couldn’t list buckets: {}", describe_aws_error(raw))));
+        let issue = |raw: &str| credential_issue(&format!("Couldn’t list buckets: {}", describe_aws_error(raw)));
         assert_eq!(issue("no providers in chain provided credentials"), Some(CredentialIssue::Missing));
-        assert_eq!(credential_issue(&Error::other(NO_CREDENTIALS_LIST)), Some(CredentialIssue::Missing));
+        assert_eq!(credential_issue(NO_CREDENTIALS_LIST), Some(CredentialIssue::Missing));
         assert_eq!(issue("The SSO session associated with this profile has expired"), Some(CredentialIssue::SignedOut));
         assert_eq!(issue("ExpiredToken: The provided token has expired"), Some(CredentialIssue::SignedOut));
         assert_eq!(issue("service error: AccessDenied: Access Denied"), Some(CredentialIssue::Denied));
         assert_eq!(issue("NoSuchBucket"), None);
-        assert_eq!(credential_issue(&Error::Query("Access denied: x".into())), None, "only S3 errors");
+        // DuckDB reading S3.
+        let duck = "HTTP Error: HTTP GET error on 'https://b.s3.amazonaws.com/k.parquet' (HTTP 403)";
+        assert_eq!(credential_issue(duck), Some(CredentialIssue::Denied));
+        assert_eq!(credential_issue("IO Error: s3://b/k.parquet: ExpiredToken"), Some(CredentialIssue::SignedOut));
+        assert_eq!(credential_issue("Binder Error: column 403 not found"), None, "403 alone isn't S3");
     }
 
     #[test]

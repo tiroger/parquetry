@@ -6,6 +6,7 @@
 mod actions;
 mod app_state;
 mod compare_view;
+mod credentials;
 mod dialogs;
 mod document;
 mod format;
@@ -108,8 +109,9 @@ fn main() {
         .detach();
 
         // Notebook windows' marimo servers stop with Parquetry.
-        cx.on_app_quit(|_| {
+        cx.on_app_quit(|cx| {
             notebook::MarimoServer::stop_all();
+            credentials::cancel_sign_in(cx);
             async {}
         })
         .detach();

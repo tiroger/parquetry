@@ -338,6 +338,13 @@ impl SqlPanel {
             (None, None) => div().child(format!("Press {} to run", crate::actions::key_label("secondary-enter"))).into_any_element(),
         };
         let body: AnyElement = match &self.outcome {
+            Some(Outcome::Error(message)) if let Some(issue) = crate::credentials::issue(message) => {
+                let panel = cx.entity().downgrade();
+                let retry: crate::credentials::Retry = std::rc::Rc::new(move |window, cx| {
+                    let _ = panel.update(cx, |this, cx| this.run(window, cx));
+                });
+                v_flex().size_full().child(crate::credentials::panel(issue, retry, None, cx)).into_any_element()
+            }
             Some(Outcome::Error(message)) => div()
                 .id("sql-error")
                 .p_3()

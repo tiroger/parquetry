@@ -266,11 +266,11 @@ impl DatasetDocument {
                     Err(error) if error.is_cancelled() => {}
                     Err(error) => {
                         this.error = Some(error.to_string().into());
-                        window.push_notification(
-                            gpui_kit::component::notification::Notification::error(error.to_string())
-                                .title("Couldn’t apply filter"),
-                            cx,
-                        );
+                        let doc = cx.entity().downgrade();
+                        let retry: crate::credentials::Retry = std::rc::Rc::new(move |window, cx| {
+                            let _ = doc.update(cx, |this, cx| this.apply_spec(this.spec.clone(), window, cx));
+                        });
+                        push_error(&error.to_string(), "Couldn’t apply filter", retry, window, cx);
                     }
                 }
                 cx.notify();
@@ -608,10 +608,9 @@ impl DatasetDocument {
                 window.push_notification(message, cx);
             }
             GridEvent::Error(message) => {
-                window.push_notification(
-                    gpui_kit::component::notification::Notification::error(message.clone()).title("Couldn’t load rows"),
-                    cx,
-                );
+                // Reloading keeps filters, sort and layout.
+                let retry: crate::credentials::Retry = std::rc::Rc::new(|window, cx| window.dispatch_action(Box::new(Reload), cx));
+                push_error(message, "Couldn’t load rows", retry, window, cx);
             }
         }
     }
@@ -1419,4 +1418,14 @@ impl Render for DatasetDocument {
             .child(self.render_status(cx))
             .children(header_menu)
     }
+}
+
+/// Report an error in a notification; a credentials problem gets one with a
+/// button that fixes it (and `retry` once it's fixed).
+pub fn push_error(message: &str, title: &str, retry: crate::credentials::Retry, window: &mut Window, cx: &mut App) {
+    let notification = match crate::credentials::issue(message) {
+        Some(issue) => crate::credentials::notification(issue, retry, cx),
+        None => gpui_kit::component::notification::Notification::error(message.to_string()).title(title.to_string()),
+    };
+    window.push_notification(notification, cx);
 }

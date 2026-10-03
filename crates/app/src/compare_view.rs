@@ -20,6 +20,9 @@ enum State {
 
 pub struct CompareView {
     title: SharedString,
+    left: Dataset,
+    right: Dataset,
+    options: CompareOptions,
     state: State,
     tab: usize,
 }
@@ -27,7 +30,20 @@ pub struct CompareView {
 impl CompareView {
     pub fn new(left: Dataset, right: Dataset, options: CompareOptions, cx: &mut Context<Self>) -> Self {
         let title = format!("{} ↔ {}", left.name, right.name).into();
-        let job: Job<Comparison> = compare(&left, &right, options);
+        let mut this = Self {
+            title,
+            left,
+            right,
+            options,
+            state: State::Failed(SharedString::default()),
+            tab: 0,
+        };
+        this.start(cx);
+        this
+    }
+
+    fn start(&mut self, cx: &mut Context<Self>) {
+        let job: Job<Comparison> = compare(&self.left, &self.right, self.options.clone());
         let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let result = job.await;
             let _ = this.update(cx, |this, cx| {
@@ -55,11 +71,8 @@ impl CompareView {
                 cx.notify();
             });
         });
-        Self {
-            title,
-            state: State::Running(task),
-            tab: 0,
-        }
+        self.state = State::Running(task);
+        cx.notify();
     }
 
     pub fn title(&self) -> SharedString {
@@ -95,6 +108,13 @@ impl Render for CompareView {
                 .child(Spinner::new())
                 .child(div().text_sm().child(format!("Comparing {}…", self.title)))
                 .into_any_element(),
+            State::Failed(message) if let Some(issue) = crate::credentials::issue(message) => {
+                let view = cx.entity().downgrade();
+                let retry: crate::credentials::Retry = std::rc::Rc::new(move |_, cx| {
+                    let _ = view.update(cx, |this, cx| this.start(cx));
+                });
+                v_flex().size_full().child(crate::credentials::panel(issue, retry, None, cx)).into_any_element()
+            }
             State::Failed(message) => v_flex()
                 .size_full()
                 .p_6()
