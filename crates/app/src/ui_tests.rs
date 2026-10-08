@@ -97,7 +97,9 @@ fn focus_in_workspace(cx: &mut TestAppContext, handle: AnyWindowHandle, ws: &Ent
 /// Pump GPUI and the engine's threads until `done` holds.
 fn wait_until(cx: &mut TestAppContext, handle: AnyWindowHandle, what: &str, mut done: impl FnMut(&mut TestAppContext) -> bool) {
     cx.executor().allow_parking();
-    for _ in 0..1500 {
+    // Generous: CI runners can be slow when several workflows build at once.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         cx.update_window(handle, |_, window, cx| window.render_frame(cx)).unwrap();
         cx.run_until_parked();
         if done(cx) {
@@ -462,8 +464,10 @@ fn value_counts_keep_and_exclude_chosen_values(cx: &mut TestAppContext) {
     click(cx, ("value-count", 0usize).into());
     click(cx, ("value-count", 2usize).into());
     click(cx, "keep-values".into());
-    wait_until(cx, handle, "kept", |cx| cx.read(|cx| grid.read(cx).row_count() == 13_333 && !doc.read(cx).is_busy()));
-    assert_eq!(filters(cx), vec![Filter::new("region", FilterOp::In, "eu, apac")]);
+    let kept = vec![Filter::new("region", FilterOp::In, "eu, apac")];
+    wait_until(cx, handle, "kept", |cx| {
+        filters(cx) == kept && cx.read(|cx| grid.read(cx).row_count() == 13_333 && !doc.read(cx).is_busy())
+    });
     assert!(cx.update_window(handle, |_, window, cx| !window.has_active_dialog(cx)).unwrap());
 
     // Excluding replaces the earlier value filter of the column: eu goes, and
@@ -471,8 +475,11 @@ fn value_counts_keep_and_exclude_chosen_values(cx: &mut TestAppContext) {
     open_counts(cx, 2);
     click(cx, ("value-count", 0usize).into());
     click(cx, "exclude-values".into());
-    wait_until(cx, handle, "excluded", |cx| cx.read(|cx| grid.read(cx).row_count() == 13_333 && !doc.read(cx).is_busy()));
-    assert_eq!(filters(cx), vec![Filter::new("region", FilterOp::NotEquals, "eu")]);
+    // us + apac is 13,333 rows too, so wait for the filter itself, not the count.
+    let excluded = vec![Filter::new("region", FilterOp::NotEquals, "eu")];
+    wait_until(cx, handle, "excluded", |cx| {
+        filters(cx) == excluded && cx.read(|cx| grid.read(cx).row_count() == 13_333 && !doc.read(cx).is_busy())
+    });
 }
 
 #[gpui_kit::test]
