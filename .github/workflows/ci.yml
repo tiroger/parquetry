@@ -42,7 +42,9 @@ jobs:
   windows:
     name: Windows build & test
     runs-on: windows-latest
-    timeout-minutes: 120
+    # Without a cache (a new Cargo.lock, or main's first run) test, clippy and the
+    # release build take ~2 h, and saving the cache comes after them.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
